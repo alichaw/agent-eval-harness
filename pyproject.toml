@@ -22,8 +22,8 @@ dev = [
 
 # W3: when you build the CLI (`harness run ...`, `harness replay ...`),
 # expose it here, e.g.:
-# [project.scripts]
-# harness = "scripts.cli:main"
+[project.scripts]
+harness = "scripts.cli:main"
 
 # --- package discovery: ship core/ and scripts/, not tests/ or runs/ ---
 [tool.setuptools.packages.find]

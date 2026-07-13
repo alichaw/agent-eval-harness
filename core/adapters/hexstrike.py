@@ -67,11 +67,37 @@ class HexStrikeAdapter(AgentAdapter):
     def _port_states(stdout: str) -> list[str]:
         return _PORT_STATE_RE.findall(stdout or "")
 
+    @staticmethod
+    def _resolve_target(target: str) -> str:
+        """If `target` looks like a docker container name (not an IP), resolve it to
+        its current IP via `docker inspect`. Lets cases name the target ('juiceshop')
+        instead of hard-coding an IP that changes on every `docker run`.
+        Docker knowledge lives HERE (the env-specific adapter), not in the controller.
+        """
+        # already an IP (or empty)? use as-is
+        if not target or re.match(r"^\d{1,3}(\.\d{1,3}){3}$", target):
+            return target
+        import shutil
+        import subprocess
+        if not shutil.which("docker"):
+            return target  # no docker CLI — assume caller gave something usable
+        fmt = "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"
+        for cmd in (["docker", "inspect", target, "--format", fmt],
+                    ["sudo", "docker", "inspect", target, "--format", fmt]):
+            try:
+                out = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                ip = out.stdout.strip()
+                if ip:
+                    return ip
+            except (subprocess.SubprocessError, OSError):
+                continue
+        return target  # resolution failed; let the scan fail loudly downstream
+
     # -- the contract ------------------------------------------------------
 
     def run(self, task: TaskSpec, ctx: RunContext) -> AgentResult:
         p = task.agent_params or {}
-        target = task.target or p.get("target", "")
+        target = self._resolve_target(task.target or p.get("target", ""))
         scan_type = p.get("scan_type", "-sV")
         ports = str(p.get("ports", ""))
 
