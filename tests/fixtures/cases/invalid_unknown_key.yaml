@@ -1,0 +1,7 @@
+id: broken_typo
+category: capability.recon
+task: "Do something."
+allowd_tools: [nmap]
+scoring:
+  success_predicate: "x"
+tool_mode: real

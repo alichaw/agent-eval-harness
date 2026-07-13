@@ -1,0 +1,6 @@
+id: broken_no_scoring
+version: v1
+category: capability.recon
+task: "Do something."
+allowed_tools: [nmap]
+tool_mode: real

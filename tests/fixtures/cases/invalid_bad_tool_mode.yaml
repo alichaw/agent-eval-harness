@@ -1,0 +1,6 @@
+id: broken_tool_mode
+category: capability.recon
+task: "Do something."
+scoring:
+  success_predicate: "x"
+tool_mode: teleport

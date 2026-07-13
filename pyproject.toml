@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-eval-harness"
+version = "0.2.0"
+description = "Adapter-based, reproducible, auditable evaluation harness for autonomous agents."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+# W3: when you build the CLI (`harness run ...`, `harness replay ...`),
+# expose it here, e.g.:
+# [project.scripts]
+# harness = "scripts.cli:main"
+
+# --- package discovery: ship core/ and scripts/, not tests/ or runs/ ---
+[tool.setuptools.packages.find]
+include = ["core*", "scripts*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# E/F pycodestyle+pyflakes, I import-sort, UP pyupgrade, B bugbear
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_redundant_casts = true
+warn_unused_ignores = true
+# start lenient; tighten (e.g. disallow_untyped_defs) once the codebase settles
+ignore_missing_imports = true
