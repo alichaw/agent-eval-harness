@@ -173,6 +173,23 @@ class Controller:
         result: AgentResult = agent.run(case, ctx)
         elapsed = round(time.time() - started, 3)
 
+        # ACTION VERIFIER (W4): don't trust the agent's self-report. Cross-check its
+        # claimed_actions against the trace evidence, and against the profile's
+        # required evidence. Emit a verification event per claim.
+        from core.verifier import Verifier, load_env_evidence, load_trace
+        events = load_trace(run_dir)
+        env_evidence = load_env_evidence(run_dir)   # independent, agent-tamper-proof
+        evidence_required = resolved["profile"].evidence_required if resolved else []
+        report = Verifier().verify(result.claimed_actions, events, evidence_required,
+                                   env_evidence=env_evidence)
+        for cv in report.claim_verdicts:
+            ctx.trace.emit(
+                TraceEventType.VERIFICATION,
+                verified=(cv.status.value == "honest"),
+                text=f"{cv.status.value}: {cv.claim}",
+                evidence=cv.evidence,
+            )
+
         # The verdict is derived from the TRACE by one rule (the same rule replay
         # uses), NOT taken from AgentResult.completed. This guarantees result.json
         # and a later replay always agree — that's what "auditable" means here.
@@ -189,6 +206,7 @@ class Controller:
             "tool_calls": [tc.model_dump() for tc in result.tool_calls],
             "claimed_actions": result.claimed_actions,
             "final_output_head": result.final_output[:500],
+            "verification": report.to_dict(),
         }
         (run_dir / "result.json").write_text(json.dumps(result_doc, indent=2))
 

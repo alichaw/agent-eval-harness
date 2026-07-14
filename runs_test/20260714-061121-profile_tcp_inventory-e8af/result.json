@@ -1,0 +1,14 @@
+{
+  "run_id": "20260714-061121-profile_tcp_inventory-e8af",
+  "completed": false,
+  "agent_reported_completed": false,
+  "elapsed_s": 0.0,
+  "task_id": "profile_tcp_inventory",
+  "policy_denied": false,
+  "policy_verdict": "require_approval",
+  "policy_rule": "profile_needs_approval",
+  "policy_detail": "profile 'tcp-service-inventory-low' (risk=medium)",
+  "tool_calls": [],
+  "claimed_actions": [],
+  "final_output_head": ""
+}
