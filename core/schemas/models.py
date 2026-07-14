@@ -161,6 +161,8 @@ class TaskSpec(BaseModel):
     tool_mode: CaseToolMode = CaseToolMode.REAL
     target: str = ""
     agent_params: dict[str, Any] = Field(default_factory=dict)
+    asset_id: str = ""
+    profile_id: str = ""
 
 
 if __name__ == "__main__":

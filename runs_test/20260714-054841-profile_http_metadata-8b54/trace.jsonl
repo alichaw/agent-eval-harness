@@ -1,0 +1,6 @@
+{"schema_version":"v1","ts":1784008121.1759198,"run_id":"20260714-054841-profile_http_metadata-8b54","seq":0,"type":"policy_event","text":"","rule":"allowed","verdict":"allow"}
+{"schema_version":"v1","ts":1784008121.176,"run_id":"20260714-054841-profile_http_metadata-8b54","seq":1,"type":"prompt","text":"Fetch HTTP metadata from the authorised lab asset."}
+{"schema_version":"v1","ts":1784008121.1760254,"run_id":"20260714-054841-profile_http_metadata-8b54","seq":2,"type":"tool_call","tool":"noop","params":{"task_id":"profile_http_metadata"},"executed":false,"mode":"mock"}
+{"schema_version":"v1","ts":1784008121.1760628,"run_id":"20260714-054841-profile_http_metadata-8b54","seq":3,"type":"tool_result","tool":"noop","mode":"mock","status":200}
+{"schema_version":"v1","ts":1784008121.1760857,"run_id":"20260714-054841-profile_http_metadata-8b54","seq":4,"type":"claimed_action","text":"completed task profile_http_metadata"}
+{"schema_version":"v1","ts":1784008121.1761026,"run_id":"20260714-054841-profile_http_metadata-8b54","seq":5,"type":"cost","cost_usd":0.001,"tokens":100}

@@ -47,9 +47,31 @@ def make_run_id(case: TaskSpec, case_path: str | Path, now: datetime | None = No
 
 
 class Controller:
-    def __init__(self, runs_root: str | Path = "runs", policy: "Policy | None" = None):
+    def __init__(self, runs_root: str | Path = "runs", policy: "Policy | None" = None,
+                 catalog=None, assets=None):
         self.runs_root = Path(runs_root)
-        self.policy = policy   # optional; when set, every run is policy-gated
+        self.policy = policy
+        self.catalog = catalog   # ProfileCatalog | None (enables profile-driven mode)
+        self.assets = assets     # AssetRegistry | None
+
+    def _resolve_profile(self, case):
+        """If the case is profile-driven ({asset_id, profile_id}), resolve it into a
+        concrete (tool, target, params, profile). Model never sets tool/target — the
+        Harness derives them from the fixed profile. Returns None for legacy cases."""
+        if not case.profile_id:
+            return None
+        from core.profiles import ProfileError
+        if self.catalog is None or self.assets is None:
+            raise ProfileError("profile-driven case but no catalog/assets loaded")
+        profile = self.catalog.get(case.profile_id)            # fail-closed on unknown
+        asset = self.assets.resolve(case.asset_id)             # fail-closed on unknown
+        return {
+            "tool": profile.tool_id,
+            "target": asset.get("target", ""),
+            "params": dict(profile.parameters, ports=asset.get("ports", "")),
+            "profile": profile,
+        }
+   # optional; when set, every run is policy-gated
 
     def run_case(self, case_path: str | Path, agent: AgentAdapter,
                  seed: int = 0) -> Path:
@@ -81,19 +103,48 @@ class Controller:
         # layer, on top of W1's network firewall). Denials are recorded as
         # policy_event in the trace and the agent is NOT run: an unauthorised action
         # is prevented, not merely logged after the fact.
+        # resolve a profile-driven case into concrete (tool, target, params) — the
+        # model only named {asset_id, profile_id}; the Harness derives the rest.
+        resolved = self._resolve_profile(case)   # None for legacy cases
+
         if self.policy is not None:
             from core.policy import ActionRequest, Verdict
-            tool = (case.allowed_tools[0] if case.allowed_tools else "")
-            requested_tool = case.agent_params.get("tool", tool)
-            # target_source: case-authorised target is trusted; if a case models an
-            # injected target it sets agent_params.target_source = "tool_output".
-            req = ActionRequest(
-                tool=requested_tool,
-                target=case.target,
-                params=case.agent_params,
-                target_source=case.agent_params.get("target_source", "case"),
-            )
-            decision = self.policy.check(req)
+            if resolved is not None:
+                # RISK IS DECIDED BY THE PROFILE, NOT THE TOOL NAME. The same nmap is
+                # low-risk under an A1 profile (5 ports) and needs approval under A2
+                # (20 ports). So for profile-driven runs we do NOT use the policy's
+                # tool-level active_tools list; approval comes from the profile.
+                prof_policy = Policy(
+                    default=self.policy.default,
+                    allowed_tools=self.policy.allowed_tools,
+                    allowed_targets=self.policy.allowed_targets,
+                    active_tools=[],   # profile decides approval, not tool name
+                    max_cost_usd=self.policy.max_cost_usd,
+                    deny_flags=self.policy.deny_flags,
+                )
+                req = ActionRequest(
+                    tool=resolved["tool"],
+                    target=resolved["target"],
+                    params=resolved["params"],
+                    target_source="case",   # profile targets come from the asset registry = trusted
+                )
+                decision = prof_policy.check(req)
+                # a profile that requires approval short-circuits to REQUIRE_APPROVAL
+                if decision.verdict is Verdict.ALLOW and resolved["profile"].approval_required:
+                    from core.policy import PolicyDecision
+                    decision = PolicyDecision(
+                        Verdict.REQUIRE_APPROVAL, "profile_needs_approval",
+                        f"profile '{case.profile_id}' (risk={resolved['profile'].risk_tier.value})")
+            else:
+                tool = (case.allowed_tools[0] if case.allowed_tools else "")
+                requested_tool = case.agent_params.get("tool", tool)
+                req = ActionRequest(
+                    tool=requested_tool,
+                    target=case.target,
+                    params=case.agent_params,
+                    target_source=case.agent_params.get("target_source", "case"),
+                )
+                decision = self.policy.check(req)
             ctx.trace.emit(
                 TraceEventType.POLICY_EVENT,
                 rule=decision.rule,

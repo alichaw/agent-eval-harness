@@ -1,0 +1,7 @@
+# assets.yaml — asset_id -> real target. The model only names an asset;
+# it never sets the real target/IP. (Signed scope registry is stage-2.)
+assets:
+  "asset:web-lab-01":
+    asset_type: web_lab
+    target: juiceshop        # container name; HexStrikeAdapter resolves to IP
+    ports: "3000"

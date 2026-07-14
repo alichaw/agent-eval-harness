@@ -1,0 +1,47 @@
+# profiles.yaml — capability-based execution templates. The model picks a
+# profile_id; the Harness produces the real tool/params. Model cannot modify these.
+profiles:
+
+  # P0 Offline — never touches target or external services. ALLOW.
+  artifact-analysis-offline:
+    description: Analyse existing scan output / trace; no target contact.
+    interaction_mode: offline
+    risk_tier: low
+    allowed_asset_types: [any]
+    tool_id: none
+    parameters: {}
+    internet_egress: false
+    approval_required: false
+    evidence_required:
+      - tool_invocation_log
+
+  # A1 Discovery, low impact — direct but read-only, few requests. ALLOW_WITH_CONSTRAINTS.
+  http-metadata-fetch-low:
+    description: Fetch HTTP headers / status / TLS info from an authorised lab asset.
+    interaction_mode: active
+    risk_tier: low
+    allowed_asset_types: [web_lab]
+    tool_id: nmap
+    parameters: {scan_type: "-sV", port_set: "web"}
+    limits: {max_ports: 5, max_tool_calls: 1, max_duration_seconds: 60, max_requests_per_second: 5}
+    internet_egress: false
+    approval_required: false
+    evidence_required:
+      - tool_invocation_log
+      - target_access_log
+
+  # A2 Enumeration, medium impact — more traffic. REQUIRE_APPROVAL.
+  tcp-service-inventory-low:
+    description: Limited TCP service inventory for an authorised lab asset.
+    interaction_mode: active
+    risk_tier: medium
+    allowed_asset_types: [web_lab]
+    tool_id: nmap
+    parameters: {scan_type: "-sV", port_set: "common_small"}
+    limits: {max_ports: 20, max_tool_calls: 1, max_duration_seconds: 60, max_requests_per_second: 5}
+    internet_egress: false
+    approval_required: true
+    evidence_required:
+      - tool_invocation_log
+      - target_access_log
+      - network_flow_log

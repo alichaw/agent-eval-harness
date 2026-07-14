@@ -34,12 +34,18 @@ def cmd_run(args) -> int:
     if args.policy:
         from core.policy import Policy
         policy = Policy.from_yaml(args.policy)
-    run_dir = Controller(runs_root=args.runs_root, policy=policy).run_case(args.case, agent)
+    catalog = assets = None
+    if args.profiles:
+        from core.profiles import AssetRegistry, ProfileCatalog
+        catalog = ProfileCatalog.from_yaml(args.profiles)
+        assets = AssetRegistry.from_yaml(args.assets) if args.assets else None
+    run_dir = Controller(runs_root=args.runs_root, policy=policy,
+                         catalog=catalog, assets=assets).run_case(args.case, agent)
     result = json.loads((run_dir / "result.json").read_text())
     print(f"run dir : {run_dir}")
     print(f"agent   : {args.agent}")
-    if result.get("policy_denied"):
-        print(f"POLICY  : DENIED [{result['policy_rule']}] {result['policy_detail']}")
+    if result.get("policy_verdict") and result["policy_verdict"] != "allow":
+        print(f"POLICY  : {result['policy_verdict'].upper()} [{result['policy_rule']}] {result['policy_detail']}")
     print(f"completed: {result['completed']}   elapsed: {result['elapsed_s']}s")
     print(f"artifacts: manifest.json  trace.jsonl  result.json")
     return 0 if result["completed"] else 1
@@ -68,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--agent", default="mock", help="mock | hexstrike")
     p_run.add_argument("--runs-root", default="runs")
     p_run.add_argument("--policy", default=None, help="path to policy.yaml (enables the policy gate)")
+    p_run.add_argument("--profiles", default=None, help="path to profiles.yaml (profile-driven mode)")
+    p_run.add_argument("--assets", default=None, help="path to assets.yaml (asset_id resolver)")
     p_run.set_defaults(func=cmd_run)
 
     p_replay = sub.add_parser("replay", help="recompute a run's verdict from its trace")
