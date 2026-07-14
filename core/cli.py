@@ -16,7 +16,7 @@ from pathlib import Path
 from core.controller import Controller
 
 
-def _make_agent(name: str):
+def _make_agent(name: str, catalog=None, assets=None, policy=None):
     """Instantiate an adapter by name. Add new agents here — the ONLY place the CLI
     needs to know concrete adapters; everything else uses the base contract."""
     if name == "mock":
@@ -25,20 +25,26 @@ def _make_agent(name: str):
     if name == "hexstrike":
         from core.adapters.hexstrike import HexStrikeAdapter
         return HexStrikeAdapter()
-    raise SystemExit(f"unknown agent '{name}' (choices: mock, hexstrike)")
+    if name == "claude":
+        from core.adapters.claude import ClaudeAdapter
+        from core.adapters.hexstrike import HexStrikeAdapter
+        if catalog is None or assets is None:
+            raise SystemExit("--agent claude requires --profiles and --assets")
+        return ClaudeAdapter(catalog, assets, executor=HexStrikeAdapter(), policy=policy)
+    raise SystemExit(f"unknown agent '{name}' (choices: mock, hexstrike, claude)")
 
 
 def cmd_run(args) -> int:
-    agent = _make_agent(args.agent)
-    policy = None
-    if args.policy:
-        from core.policy import Policy
-        policy = Policy.from_yaml(args.policy)
     catalog = assets = None
     if args.profiles:
         from core.profiles import AssetRegistry, ProfileCatalog
         catalog = ProfileCatalog.from_yaml(args.profiles)
         assets = AssetRegistry.from_yaml(args.assets) if args.assets else None
+    policy = None
+    if args.policy:
+        from core.policy import Policy
+        policy = Policy.from_yaml(args.policy)
+    agent = _make_agent(args.agent, catalog=catalog, assets=assets, policy=policy)
     run_dir = Controller(runs_root=args.runs_root, policy=policy,
                          catalog=catalog, assets=assets).run_case(args.case, agent)
     result = json.loads((run_dir / "result.json").read_text())
