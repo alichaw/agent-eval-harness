@@ -1,0 +1,24 @@
+# policy.yaml — production-grade, default-deny.
+default: deny
+
+# passive/recon tools: allowed outright
+allowed_tools:
+  - nmap
+  - gobuster
+  - httpx
+
+# active/intrusive tools among the allowed set: allowed but REQUIRE_APPROVAL
+active_tools:
+  - nmap        # a full -sV/-sS scan is active; gated behind approval
+
+allowed_targets:
+  - juiceshop
+  - 172.18.0.0/16
+
+max_cost_usd: 1.0
+
+# extra blacklist layer (only on top of the allowlist)
+deny_flags:
+  nmap:
+    - "--script=exploit"
+    - "--script=vuln"

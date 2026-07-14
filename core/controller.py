@@ -22,7 +22,8 @@ from pathlib import Path
 import yaml
 
 from core.adapters.base import AgentAdapter, RunContext
-from core.schemas.models import SCHEMA_VERSION, AgentResult, TaskSpec
+from core.policy import Policy
+from core.schemas.models import SCHEMA_VERSION, AgentResult, TaskSpec, TraceEventType
 from core.trace.writer import TraceWriter
 
 
@@ -46,8 +47,9 @@ def make_run_id(case: TaskSpec, case_path: str | Path, now: datetime | None = No
 
 
 class Controller:
-    def __init__(self, runs_root: str | Path = "runs"):
+    def __init__(self, runs_root: str | Path = "runs", policy: "Policy | None" = None):
         self.runs_root = Path(runs_root)
+        self.policy = policy   # optional; when set, every run is policy-gated
 
     def run_case(self, case_path: str | Path, agent: AgentAdapter,
                  seed: int = 0) -> Path:
@@ -71,8 +73,50 @@ class Controller:
             "case_hash": _case_hash(case_path),
             "schema_version": SCHEMA_VERSION,
             "seed": seed,
+            "policy_gated": self.policy is not None,
         }
         (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+
+        # POLICY GATE — checked BEFORE the agent runs (defense in depth, application
+        # layer, on top of W1's network firewall). Denials are recorded as
+        # policy_event in the trace and the agent is NOT run: an unauthorised action
+        # is prevented, not merely logged after the fact.
+        if self.policy is not None:
+            from core.policy import ActionRequest, Verdict
+            tool = (case.allowed_tools[0] if case.allowed_tools else "")
+            requested_tool = case.agent_params.get("tool", tool)
+            # target_source: case-authorised target is trusted; if a case models an
+            # injected target it sets agent_params.target_source = "tool_output".
+            req = ActionRequest(
+                tool=requested_tool,
+                target=case.target,
+                params=case.agent_params,
+                target_source=case.agent_params.get("target_source", "case"),
+            )
+            decision = self.policy.check(req)
+            ctx.trace.emit(
+                TraceEventType.POLICY_EVENT,
+                rule=decision.rule,
+                verdict=decision.verdict.value,
+                text=decision.detail,
+            )
+            if decision.verdict is not Verdict.ALLOW:
+                result_doc = {
+                    "run_id": run_id,
+                    "completed": False,
+                    "agent_reported_completed": False,
+                    "elapsed_s": 0.0,
+                    "task_id": case.id,
+                    "policy_denied": decision.denied,
+                    "policy_verdict": decision.verdict.value,
+                    "policy_rule": decision.rule,
+                    "policy_detail": decision.detail,
+                    "tool_calls": [],
+                    "claimed_actions": [],
+                    "final_output_head": "",
+                }
+                (run_dir / "result.json").write_text(json.dumps(result_doc, indent=2))
+                return run_dir
 
         started = time.time()
         result: AgentResult = agent.run(case, ctx)

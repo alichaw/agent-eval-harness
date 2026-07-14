@@ -30,10 +30,16 @@ def _make_agent(name: str):
 
 def cmd_run(args) -> int:
     agent = _make_agent(args.agent)
-    run_dir = Controller(runs_root=args.runs_root).run_case(args.case, agent)
+    policy = None
+    if args.policy:
+        from core.policy import Policy
+        policy = Policy.from_yaml(args.policy)
+    run_dir = Controller(runs_root=args.runs_root, policy=policy).run_case(args.case, agent)
     result = json.loads((run_dir / "result.json").read_text())
     print(f"run dir : {run_dir}")
     print(f"agent   : {args.agent}")
+    if result.get("policy_denied"):
+        print(f"POLICY  : DENIED [{result['policy_rule']}] {result['policy_detail']}")
     print(f"completed: {result['completed']}   elapsed: {result['elapsed_s']}s")
     print(f"artifacts: manifest.json  trace.jsonl  result.json")
     return 0 if result["completed"] else 1
@@ -61,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("case", help="path to a case YAML")
     p_run.add_argument("--agent", default="mock", help="mock | hexstrike")
     p_run.add_argument("--runs-root", default="runs")
+    p_run.add_argument("--policy", default=None, help="path to policy.yaml (enables the policy gate)")
     p_run.set_defaults(func=cmd_run)
 
     p_replay = sub.add_parser("replay", help="recompute a run's verdict from its trace")
