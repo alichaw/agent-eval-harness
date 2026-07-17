@@ -138,3 +138,31 @@ profiles:
     internet_egress: false
     approval_required: false
     evidence_required: [tool_invocation_log, target_access_log]
+
+  # Host availability check for one authorised host or a small authorised segment.
+  host-discovery-fping-low:
+    description: Check whether an authorised host responds to ICMP using fping.
+    interaction_mode: active
+    risk_tier: low
+    allowed_asset_types: [host, network_segment]
+    tool_id: fping
+    parameters:
+      additional_args: "-a"
+    limits: {max_targets: 1, max_tool_calls: 1, max_duration_seconds: 30, max_requests_per_second: 5}
+    internet_egress: false
+    approval_required: false
+    evidence_required: [tool_invocation_log, target_access_log]
+
+  # Read-only HTTP reachability and fingerprinting for an authorised web service.
+  http-fingerprint-low:
+    description: Collect HTTP status, title, TLS, and technology metadata from an authorised target.
+    interaction_mode: active
+    risk_tier: low
+    allowed_asset_types: [host, web_lab]
+    tool_id: httpx
+    parameters:
+      additional_args: "-status-code -title -tech-detect"
+    limits: {max_targets: 1, max_tool_calls: 1, max_duration_seconds: 60, max_requests_per_second: 5}
+    internet_egress: false
+    approval_required: false
+    evidence_required: [tool_invocation_log, target_access_log]
