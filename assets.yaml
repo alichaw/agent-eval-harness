@@ -5,3 +5,7 @@ assets:
     asset_type: web_lab
     target: juiceshop        # container name; HexStrikeAdapter resolves to IP
     ports: "3000"
+    # target-specific tool args (e.g. Juice Shop is a SPA: every path returns 200
+    # with the same length, so gobuster must exclude that wildcard length).
+    tool_args:
+      additional_args: "--exclude-length 9903"

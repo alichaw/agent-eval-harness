@@ -7,6 +7,8 @@ is itself a finding. This is the "auditable" leg of the project's core promise.
 
 from __future__ import annotations
 
+import re
+
 from pathlib import Path
 
 from core.schemas.models import TraceEvent, TraceEventType
@@ -24,13 +26,25 @@ def replay_run(run_dir: str | Path) -> dict:
     had_error = any(e.type is TraceEventType.ERROR for e in events)
     tool_results = [e for e in events if e.type is TraceEventType.TOOL_RESULT]
 
-    reachable = False
     for e in tool_results:
         text = e.text or ""
-        if "'open'" in text or "'closed'" in text:
-            reachable = True
+    # A tool_result signals completion in a tool-appropriate way:
+    #   nmap  -> a reachable port state ('open'/'closed')
+    #   web   -> success=True or findings>0 (a scan that ran is completion,
+    #            even if it found nothing — but here we require a positive signal)
+    # This mirrors HexStrikeAdapter._judge, kept in sync so replay == live result.
+    succeeded = False
+    for e in tool_results:
+        text = e.text or ""
+        if "'open'" in text or "'closed'" in text:       # nmap reachability
+            succeeded = True
+        if "success=True" in text:                        # web tools ran ok
+            succeeded = True
+        m = re.search(r"findings=(\d+)", text)            # web tools found something
+        if m and int(m.group(1)) > 0:
+            succeeded = True
 
-    completed = (not had_error) and bool(tool_results) and reachable
+    completed = (not had_error) and bool(tool_results) and succeeded
     return {
         "completed": completed,
         "n_events": len(events),

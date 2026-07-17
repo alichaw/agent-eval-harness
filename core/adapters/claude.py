@@ -134,6 +134,7 @@ class ClaudeAdapter(AgentAdapter):
 
         claimed: list[str] = []
         history: list[str] = []
+        executed_profiles: set[str] = set()   # loop guard: profiles already run
         completed = False
 
         for step in range(self.max_steps):
@@ -172,11 +173,19 @@ class ClaudeAdapter(AgentAdapter):
                                        self.policy, prop.asset_id, prop.profile_id, task, ctx)
             if step_res.admitted:
                 claimed.append(f"executed '{prop.profile_id}'")
-                history.append(f"[{prop.profile_id}] {step_res.output[:300]}")
+                out = step_res.output[:400] or "(no output)"
+                history.append(f"[{prop.profile_id}] executed. result: {out}")
+                # loop guard: if the same profile has already run, don't repeat it —
+                # tell the model it's done to prevent an infinite retry loop when a
+                # tool returns few/no findings.
+                if prop.profile_id in executed_profiles:
+                    history.append(f"NOTE: '{prop.profile_id}' already executed; "
+                                   f"do not repeat it. Set done=true if the objective "
+                                   f"is met, or choose a DIFFERENT profile.")
+                executed_profiles.add(prop.profile_id)
             else:
                 history.append(f"[{prop.profile_id}] BLOCKED by policy: "
                                f"{step_res.verdict}/{step_res.rule}")
-                # a denied/approval-required step ends this simple loop
                 if step_res.verdict != "allow":
                     break
 

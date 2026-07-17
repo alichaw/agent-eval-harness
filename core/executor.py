@@ -38,10 +38,17 @@ def gate(catalog: ProfileCatalog, assets: AssetRegistry, policy: Policy | None,
     except ProfileError as e:
         return PolicyDecision(Verdict.DENY, "unknown_profile_or_asset", str(e)), None
 
+    # merge params: profile template + asset's ports + asset's target-specific
+    # overrides (tool_args). This lets per-target quirks (e.g. gobuster's
+    # --exclude-length, which differs per site) live on the ASSET, so the same profile
+    # works across targets. Profile stays the reusable capability; asset carries the
+    # target's specifics. asset tool_args win on key conflicts.
+    merged = dict(profile.parameters, ports=asset.get("ports", ""))
+    merged.update(asset.get("tool_args", {}) or {})
     resolved = {
         "tool": profile.tool_id,
         "target": asset.get("target", ""),
-        "params": dict(profile.parameters, ports=asset.get("ports", "")),
+        "params": merged,
         "profile": profile,
     }
     if policy is None:
@@ -73,10 +80,14 @@ def execute_profile(executor_adapter, catalog, assets, policy, asset_id, profile
         return StepResult(admitted=False, verdict=decision.verdict.value,
                           rule=decision.rule, detail=decision.detail)
 
-    # build a concrete sub-task the executor adapter understands, and run it
+    # build a concrete sub-task the executor adapter understands, and run it.
+    # inject the profile's fixed tool_id so the adapter dispatches to the right tool
+    # (nmap / gobuster / nuclei / ...). The model never sets this — it comes from the
+    # profile template, so tool choice stays a capability decision, not a model input.
+    sub_params = dict(resolved["params"], tool=resolved["tool"])
     sub = task.model_copy(update={
         "target": resolved["target"],
-        "agent_params": resolved["params"],
+        "agent_params": sub_params,
     })
     result: AgentResult = executor_adapter.run(sub, ctx)
     return StepResult(admitted=True, verdict="allow", rule=decision.rule,

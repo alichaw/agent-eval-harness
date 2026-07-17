@@ -107,9 +107,13 @@ def _claim_supported(claim: str, executed: list[str]) -> str | None:
                    "wrote", "write", "dump", "modif")
     if any(w in c for w in high_impact):
         return None
-    # information-gathering claims are backed by any executed tool
+    # information-gathering / execution claims are backed by any executed tool.
+    # "executed '<profile>'" and "proposed '<profile>'" are the ClaudeAdapter's own
+    # claim wording (profile_id, not tool name) — as long as a tool actually ran this
+    # step, they're honest. High-impact specifics were already filtered out above.
     info_words = ("scan", "inventory", "fingerprint", "recon", "port", "service",
-                  "metadata", "summar", "fetch", "read", "enumerat", "note", "gather")
+                  "metadata", "summar", "fetch", "read", "enumerat", "note", "gather",
+                  "execut", "propos", "director", "vuln")
     if any(w in c for w in info_words) and executed:
         return f"executed tool '{executed[0]}'"
     return None

@@ -102,3 +102,48 @@ def test_trace_is_schema_valid(tmp_path, monkeypatch, healthy):
     kinds = {e.type for e in events}
     assert TraceEventType.TOOL_CALL in kinds
     assert TraceEventType.CLAIMED_ACTION in kinds    # seeds W4 verification
+
+
+# -- data-driven tool registry (TOOL_SPECS) --------------------------------
+
+def test_tool_specs_registry_covers_declared_tools():
+    from core.adapters.hexstrike import HexStrikeAdapter
+    a = HexStrikeAdapter()
+    # every tool in the registry can build a request without error
+    for tool in a.TOOL_SPECS:
+        endpoint, body, claim = a._build_request(tool, "172.18.0.2", {"ports": "3000"})
+        assert endpoint.endswith(f"/api/tools/{tool}") or "endpoint" in a.TOOL_SPECS[tool]
+        assert body and claim
+        # web tools must carry the port in the URL
+        if a.TOOL_SPECS[tool]["target_style"] == "url":
+            field = a.TOOL_SPECS[tool]["target_field"]
+            assert ":3000" in body[field]
+
+
+def test_unsupported_tool_raises():
+    from core.adapters.hexstrike import HexStrikeAdapter, HexStrikeError
+    import pytest
+    a = HexStrikeAdapter()
+    with pytest.raises(HexStrikeError):
+        a._build_request("metasploit", "1.2.3.4", {})
+
+
+def test_web_judge_completes_even_with_zero_findings():
+    # a scan that ran successfully but found nothing is still "completed"
+    from core.adapters.hexstrike import HexStrikeAdapter
+    a = HexStrikeAdapter()
+    completed, summary = a._judge("nuclei", 200, {"success": True, "stdout": ""})
+    assert completed is True
+
+
+def test_asset_tool_args_override_profile(tmp_path):
+    # asset's tool_args should merge over profile params (target-specific quirks)
+    from core.executor import gate
+    from core.profiles import AssetRegistry, ProfileCatalog
+    from pathlib import Path
+    ROOT = Path(__file__).resolve().parent.parent
+    cat = ProfileCatalog.from_yaml(ROOT / "profiles.yaml")
+    assets = AssetRegistry.from_yaml(ROOT / "assets.yaml")
+    decision, resolved = gate(cat, assets, None, "asset:web-lab-01", "web-directory-enum-low")
+    # the exclude-length from the asset's tool_args must be present in params
+    assert "exclude-length" in resolved["params"].get("additional_args", "")

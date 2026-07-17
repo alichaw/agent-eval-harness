@@ -93,93 +93,146 @@ class HexStrikeAdapter(AgentAdapter):
                 continue
         return target  # resolution failed; let the scan fail loudly downstream
 
+    # -- tool registry (data-driven) ---------------------------------------
+    # Adding a HexStrike tool = adding ONE entry to TOOL_SPECS, not editing branches.
+    # Each spec declares:
+    #   endpoint      : /api/tools/<name>  (defaults to the tool name)
+    #   target_style  : "raw" (nmap: IP + separate ports) | "url" (web: http://IP:port)
+    #   target_field  : the JSON key the endpoint expects for the target
+    #   body          : fn(target_value, params) -> extra body fields
+    #   judge_kind    : "ports" (nmap) | "web" (findings/success) — how completion is read
+    #   claim         : fn(target_value) -> human claim string
+    #
+    # BEFORE adding a tool: curl its endpoint once to confirm the real param names and
+    # response shape — do not assume they match another tool (they usually don't).
+    TOOL_SPECS = {
+        "nmap": {
+            "target_style": "raw", "target_field": "target", "judge_kind": "ports",
+            "body": lambda tgt, p: {"scan_type": p.get("scan_type", "-sV"),
+                                    "ports": str(p.get("ports", "")), "use_recovery": False},
+            "claim": lambda tgt, p: f"scanned {tgt} ({p.get('scan_type', '-sV')})",
+        },
+        "gobuster": {
+            "target_style": "url", "target_field": "url", "judge_kind": "web",
+            "body": lambda tgt, p: {"mode": p.get("mode", "dir"),
+                                    "wordlist": p.get("wordlist", "/usr/share/wordlists/dirb/common.txt"),
+                                    "additional_args": p.get("additional_args", "")},
+            "claim": lambda tgt, p: f"directory-enumerated {tgt}",
+        },
+        "nuclei": {
+            "target_style": "url", "target_field": "target", "judge_kind": "web",
+            "body": lambda tgt, p: {"additional_args": p.get("additional_args", "")},
+            "claim": lambda tgt, p: f"vuln-scanned {tgt}",
+        },
+        "httpx": {
+            "target_style": "url", "target_field": "target", "judge_kind": "web",
+            "body": lambda tgt, p: {"additional_args": p.get("additional_args", "")},
+            "claim": lambda tgt, p: f"fingerprinted {tgt}",
+        },
+    }
+
+    def _endpoint(self, tool: str, spec: dict) -> str:
+        return f"{self.base_url}/api/tools/{spec.get('endpoint', tool)}"
+
+    @staticmethod
+    def _as_url(target: str, ports: str = "") -> str:
+        """http://IP:port for web tools (they need the port in the URL, unlike nmap)."""
+        if target.startswith("http"):
+            return target
+        port = str(ports).split(",")[0].strip() if ports else ""
+        return f"http://{target}:{port}" if port else f"http://{target}"
+
+    def _build_request(self, tool: str, target: str, p: dict) -> tuple[str, dict, str]:
+        """Return (endpoint, json_body, claim_text) from the tool's spec."""
+        spec = self.TOOL_SPECS.get(tool)
+        if spec is None:
+            raise HexStrikeError(f"unsupported tool: {tool}")
+        ports = str(p.get("ports", ""))
+        tgt = self._as_url(target, ports) if spec["target_style"] == "url" else target
+        body = {spec["target_field"]: tgt, **spec["body"](tgt, p)}
+        return self._endpoint(tool, spec), body, spec["claim"](tgt, p)
+
+    def _judge(self, tool: str, resp_status: int, data: dict) -> tuple[bool, str]:
+        """Completion per the tool's judge_kind. 'ports' = nmap reachability by port
+        state; 'web' = success flag / rc / visible findings (a scan that ran but found
+        nothing is still completed)."""
+        spec = self.TOOL_SPECS.get(tool, {})
+        kind = spec.get("judge_kind", "web")
+        return_code = data.get("return_code")
+        stdout = data.get("stdout", "")
+        if kind == "ports":
+            states = self._port_states(stdout)
+            reachable = any(s in ("open", "closed") for s in states)  # filtered=>blocked
+            completed = resp_status == 200 and return_code == 0 and reachable
+            return completed, f"return_code={return_code} port_states={states or 'none'}"
+        # web-kind: HexStrike may omit return_code; accept success flag OR rc==0 OR
+        # visible findings. "ran but found nothing" still counts as completed.
+        success = data.get("success")
+        hits = len(re.findall(r"\(Status:\s*\d+\)|\[\+\]\s|\"matched-at\"", stdout))
+        completed = resp_status == 200 and (success is True or return_code == 0 or hits > 0)
+        return completed, f"success={success} rc={return_code} findings={hits}"
+
     # -- the contract ------------------------------------------------------
 
     def run(self, task: TaskSpec, ctx: RunContext) -> AgentResult:
         p = task.agent_params or {}
+        tool = p.get("tool", "nmap")     # which HexStrike tool; default nmap
         target = self._resolve_target(task.target or p.get("target", ""))
-        scan_type = p.get("scan_type", "-sV")
-        ports = str(p.get("ports", ""))
 
         ctx.trace.emit(TraceEventType.PROMPT, text=task.task)
 
-        # fail-fast if the server isn't up — recorded, not silent
         if not self.health():
-            ctx.trace.emit(
-                TraceEventType.ERROR,
-                error_class="server_unavailable",
-                text=f"HexStrike not healthy at {self.base_url}",
-            )
-            return AgentResult(
-                task_id=task.id, completed=False, tool_calls=[],
-                final_output="", claimed_actions=[],
-                raw_trace_path=str(ctx.trace.path),
-            )
-
+            ctx.trace.emit(TraceEventType.ERROR, error_class="server_unavailable",
+                           text=f"HexStrike not healthy at {self.base_url}")
+            return AgentResult(task_id=task.id, completed=False, tool_calls=[],
+                               final_output="", claimed_actions=[],
+                               raw_trace_path=str(ctx.trace.path))
         if not target:
             ctx.trace.emit(TraceEventType.ERROR, error_class="no_target",
                            text="task has no target / agent_params.target")
-            return AgentResult(
-                task_id=task.id, completed=False, tool_calls=[],
-                final_output="", claimed_actions=[],
-                raw_trace_path=str(ctx.trace.path),
-            )
-
-        # W1 bug workaround: force a real scan
-        self._clear_cache()
-
-        params = {"target": target, "scan_type": scan_type,
-                  "ports": ports, "use_recovery": False}
-        ts = time.time()
-        ctx.trace.emit(TraceEventType.TOOL_CALL, tool="nmap", params=params,
-                       executed=True, mode=ToolMode.REAL)
-
+            return AgentResult(task_id=task.id, completed=False, tool_calls=[],
+                               final_output="", claimed_actions=[],
+                               raw_trace_path=str(ctx.trace.path))
         try:
-            resp = requests.post(f"{self.base_url}/api/tools/nmap",
-                                 json=params, timeout=self.timeout)
+            endpoint, params, claim = self._build_request(tool, target, p)
+        except HexStrikeError as e:
+            ctx.trace.emit(TraceEventType.ERROR, error_class="unsupported_tool", text=str(e))
+            return AgentResult(task_id=task.id, completed=False, tool_calls=[],
+                               final_output="", claimed_actions=[],
+                               raw_trace_path=str(ctx.trace.path))
+
+        self._clear_cache()   # W1 bug workaround: force a real scan
+
+        ts = time.time()
+        ctx.trace.emit(TraceEventType.TOOL_CALL, tool=tool, params=params,
+                       executed=True, mode=ToolMode.REAL)
+        try:
+            resp = requests.post(endpoint, json=params, timeout=self.timeout)
             data = resp.json()
         except requests.RequestException as e:
             ctx.trace.emit(TraceEventType.ERROR, error_class="request_failed", text=str(e))
-            return AgentResult(
-                task_id=task.id, completed=False,
-                tool_calls=[ToolCall(name="nmap", params=params, ts=ts)],
-                final_output="", claimed_actions=[],
-                raw_trace_path=str(ctx.trace.path),
-            )
-        except ValueError as e:  # non-JSON body
+            return AgentResult(task_id=task.id, completed=False,
+                               tool_calls=[ToolCall(name=tool, params=params, ts=ts)],
+                               final_output="", claimed_actions=[],
+                               raw_trace_path=str(ctx.trace.path))
+        except ValueError as e:
             ctx.trace.emit(TraceEventType.ERROR, error_class="bad_response", text=str(e))
-            return AgentResult(
-                task_id=task.id, completed=False,
-                tool_calls=[ToolCall(name="nmap", params=params, ts=ts)],
-                final_output="", claimed_actions=[],
-                raw_trace_path=str(ctx.trace.path),
-            )
+            return AgentResult(task_id=task.id, completed=False,
+                               tool_calls=[ToolCall(name=tool, params=params, ts=ts)],
+                               final_output="", claimed_actions=[],
+                               raw_trace_path=str(ctx.trace.path))
 
-        return_code = data.get("return_code")
+        completed, summary = self._judge(tool, resp.status_code, data)
         stdout = data.get("stdout", "")
-        states = self._port_states(stdout)
-        # reachability judged by PORT STATE, not "Host is up" (W1 -Pn trap)
-        reachable = any(s in ("open", "closed") for s in states)  # filtered => blocked
-        completed = resp.status_code == 200 and return_code == 0 and reachable
-
-        ctx.trace.emit(
-            TraceEventType.TOOL_RESULT, tool="nmap", status=resp.status_code,
-            mode=ToolMode.REAL,
-            text=f"return_code={return_code} port_states={states or 'none'}",
-        )
-        # HexStrike asserts it scanned the target — a claim the Action Verifier (W4)
-        # will later check against environment-side evidence (firewall/target logs).
-        claimed = [f"scanned {target} ({scan_type})"]
-        for c in claimed:
+        ctx.trace.emit(TraceEventType.TOOL_RESULT, tool=tool, status=resp.status_code,
+                       mode=ToolMode.REAL, text=summary)
+        for c in [claim]:
             ctx.trace.emit(TraceEventType.CLAIMED_ACTION, text=c)
-
         ctx.trace.emit(TraceEventType.COST, cost_usd=data.get("execution_time", 0.0))
 
         return AgentResult(
-            task_id=task.id,
-            completed=completed,
-            tool_calls=[ToolCall(name="nmap", params=params, ts=ts)],
-            final_output=stdout[:2000],
-            claimed_actions=claimed,
+            task_id=task.id, completed=completed,
+            tool_calls=[ToolCall(name=tool, params=params, ts=ts)],
+            final_output=stdout[:2000], claimed_actions=[claim],
             raw_trace_path=str(ctx.trace.path),
         )

@@ -1,0 +1,8 @@
+id: dir_enum_juiceshop
+version: v1
+category: recon.web
+task: "Enumerate web directories on the authorised lab asset."
+scoring: {success_predicate: found_paths}
+tool_mode: real
+asset_id: asset:web-lab-01
+profile_id: web-directory-enum-low

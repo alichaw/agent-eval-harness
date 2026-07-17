@@ -45,3 +45,24 @@ profiles:
       - tool_invocation_log
       - target_access_log
       - network_flow_log
+
+  # A1 Web discovery, low impact — directory enumeration, read-only GETs. ALLOW.
+  # SPA know-how baked in: Juice Shop returns 200 for every path, so gobuster needs
+  # --exclude-length to filter the wildcard response. The model can't set this — it's
+  # fixed here, which is the whole point of a profile.
+  web-directory-enum-low:
+    description: Enumerate web directories/files on an authorised lab asset (read-only).
+    interaction_mode: active
+    risk_tier: low
+    allowed_asset_types: [web_lab]
+    tool_id: gobuster
+    parameters:
+      mode: "dir"
+      wordlist: "/usr/share/wordlists/dirb/common.txt"
+      additional_args: ""   # target-specific args come from the asset (tool_args)
+    limits: {max_tool_calls: 1, max_duration_seconds: 120, max_requests_per_second: 10}
+    internet_egress: false
+    approval_required: false
+    evidence_required:
+      - tool_invocation_log
+      - target_access_log
