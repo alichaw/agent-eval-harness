@@ -142,7 +142,15 @@ class HexStrikeAdapter(AgentAdapter):
             "target_style": "url",
             "target_field": "target",
             "judge_kind": "web",
-            "body": lambda tgt, p: {"additional_args": p.get("additional_args", "")},
+            "body": lambda tgt, p: {
+                "probe": p.get("probe", True),
+                "tech_detect": p.get("tech_detect", True),
+                "status_code": p.get("status_code", True),
+                "content_length": p.get("content_length", False),
+                "title": p.get("title", True),
+                "web_server": p.get("web_server", True),
+                "threads": p.get("threads", 10),
+            },
             "claim": lambda tgt, p: f"fingerprinted {tgt}",
         },
         # -- T1 recon (segmentation testing): host discovery + connectivity --------

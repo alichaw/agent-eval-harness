@@ -138,3 +138,32 @@ profiles:
     internet_egress: false
     approval_required: false
     evidence_required: [tool_invocation_log, target_access_log]
+
+  # HTTP reachability and read-only technology fingerprinting.
+  # All options are fixed structured fields; the model cannot supply raw flags.
+  http-fingerprint-low:
+    description: Collect HTTP status, title, server, and technology metadata.
+    interaction_mode: active
+    risk_tier: low
+    allowed_asset_types: [host, web_lab]
+    tool_id: httpx
+    parameters:
+      probe: true
+      tech_detect: true
+      status_code: true
+      content_length: false
+      title: true
+      web_server: true
+      threads: 10
+    limits:
+      max_targets: 1
+      max_ports: 1
+      max_tool_calls: 1
+      max_duration_seconds: 60
+      max_requests_per_second: 5
+      max_retries: 0
+    internet_egress: false
+    approval_required: false
+    evidence_required:
+      - tool_invocation_log
+      - target_access_log
