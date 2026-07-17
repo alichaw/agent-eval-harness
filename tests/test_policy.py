@@ -120,3 +120,60 @@ def test_controller_without_policy_runs_normally(tmp_path):
     run_dir = ctrl.run_case(case, MockAgent())
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert manifest["policy_gated"] is False
+
+
+# -- Target Matrix: hard exclusions (segmentation testing safety net) -------
+
+def test_denied_target_wins_over_allowed():
+    # a target inside BOTH an allowed segment AND a denied zone must be DENIED
+    from core.policy import Policy, ActionRequest, Verdict
+    pol = Policy(default="deny", allowed_tools=["nmap"],
+                 allowed_targets=["10.20.0.0/16"],      # broad authorised range
+                 denied_targets=["10.20.5.0/24"])       # carved-out forbidden zone
+    req = ActionRequest(tool="nmap", target="10.20.5.10", target_source="case")
+    d = pol.check(req)
+    assert d.verdict is Verdict.DENY
+    assert d.rule == "target_forbidden_zone"
+
+
+def test_allowed_target_not_in_denied_passes():
+    from core.policy import Policy, ActionRequest, Verdict
+    pol = Policy(default="deny", allowed_tools=["nmap"],
+                 allowed_targets=["10.20.0.0/16"], denied_targets=["10.20.5.0/24"])
+    req = ActionRequest(tool="nmap", target="10.20.1.10", target_source="case")
+    assert pol.check(req).verdict is Verdict.ALLOW
+
+
+def test_denied_single_ip():
+    from core.policy import Policy, ActionRequest, Verdict
+    pol = Policy(default="deny", allowed_tools=["nmap"],
+                 allowed_targets=["10.0.0.0/8"], denied_targets=["10.0.0.1"])
+    assert pol.check(ActionRequest(tool="nmap", target="10.0.0.1",
+                                   target_source="case")).verdict is Verdict.DENY
+
+
+# -- Target Matrix: hard exclusions win over allow (segmentation safety net) --
+
+def test_forbidden_zone_denied_even_if_in_allowed_segment():
+    # a target inside an authorised segment but ALSO in a hard-excluded zone -> DENY.
+    # This is the safety net for internal testing: production/OT must never be hit.
+    from core.policy import Policy, ActionRequest, Verdict
+    pol = Policy(default="deny", allowed_tools=["nmap"],
+                 allowed_targets=["10.20.0.0/16"],      # authorised segment
+                 denied_targets=["10.20.99.0/24"])      # forbidden zone inside it
+    # target in the forbidden sub-range
+    d = pol.check(ActionRequest(tool="nmap", target="10.20.99.5", target_source="case"))
+    assert d.verdict is Verdict.DENY
+    assert d.rule == "target_forbidden_zone"
+    # a sibling target in the authorised segment (not forbidden) is allowed
+    d2 = pol.check(ActionRequest(tool="nmap", target="10.20.1.5", target_source="case"))
+    assert d2.verdict is Verdict.ALLOW
+
+
+def test_out_of_scope_target_denied():
+    # target not in any authorised segment -> deny (default-deny Target Matrix)
+    from core.policy import Policy, ActionRequest, Verdict
+    pol = Policy(default="deny", allowed_tools=["nmap"], allowed_targets=["10.20.0.0/16"])
+    d = pol.check(ActionRequest(tool="nmap", target="8.8.8.8", target_source="case"))
+    assert d.verdict is Verdict.DENY
+    assert d.rule == "target_not_allowed"

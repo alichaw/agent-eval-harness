@@ -43,6 +43,11 @@ def replay_run(run_dir: str | Path) -> dict:
         m = re.search(r"findings=(\d+)", text)            # web tools found something
         if m and int(m.group(1)) > 0:
             succeeded = True
+        # T1 recon: host discovery / connectivity — the probe running IS the result
+        if "live_hosts=yes" in text or "reachable=" in text:
+            succeeded = True
+        if re.search(r"\brc=0\b", text):                  # discovery/connectivity ok
+            succeeded = True
 
     completed = (not had_error) and bool(tool_results) and succeeded
     return {

@@ -66,3 +66,75 @@ profiles:
     evidence_required:
       - tool_invocation_log
       - target_access_log
+
+  # ── T1 recon profiles (segmentation testing) — autonomous, read-only ──────
+  # host discovery: "which hosts are alive in an authorised segment"
+  host-discovery-sweep-low:
+    description: Discover live hosts in an authorised network segment (ping/ARP sweep, read-only).
+    interaction_mode: active
+    risk_tier: low
+    allowed_asset_types: [network_segment]
+    tool_id: nmap
+    parameters: {scan_type: "-sn"}          # ping sweep, no port scan
+    limits: {max_tool_calls: 1, max_duration_seconds: 120, max_requests_per_second: 50}
+    internet_egress: false
+    approval_required: false
+    evidence_required: [tool_invocation_log, target_access_log]
+
+  # connectivity: "can this segment reach a specific host:port" — THE isolation test
+  segment-connectivity-probe-low:
+    description: Test whether an authorised host/port is reachable from here (isolation check).
+    interaction_mode: active
+    risk_tier: low
+    allowed_asset_types: [network_segment, host]
+    tool_id: nmap
+    parameters: {scan_type: "-Pn"}          # connectivity by port state, no host-discovery assumption
+    limits: {max_tool_calls: 1, max_duration_seconds: 60, max_requests_per_second: 20}
+    internet_egress: false
+    approval_required: false
+    evidence_required: [tool_invocation_log, target_access_log]
+
+  # ══ T1 SEGMENTATION RECON (autonomous, low-risk, read-only) ══════════════════
+  # These answer "which hosts are alive / can A reach B" — the core of isolation
+  # testing. Non-destructive, so the agent may use them autonomously. Targets are
+  # still constrained by the policy Target Matrix (authorised segments only).
+
+  # Host discovery via nmap ping sweep (no port scan, just "who's alive")
+  host-discovery-ping-sweep:
+    description: Discover live hosts in an authorised segment (nmap -sn ping sweep, no port scan).
+    interaction_mode: active
+    risk_tier: low
+    allowed_asset_types: [network_segment, web_lab]
+    tool_id: nmap
+    parameters: {scan_type: "-sn", ports: ""}
+    limits: {max_tool_calls: 1, max_duration_seconds: 120, max_requests_per_second: 50}
+    internet_egress: false
+    approval_required: false
+    evidence_required: [tool_invocation_log, target_access_log]
+
+  # Host discovery via ARP (most accurate on the local segment)
+  host-discovery-arp:
+    description: Discover live hosts on the local segment via ARP (arp-scan).
+    interaction_mode: active
+    risk_tier: low
+    allowed_asset_types: [network_segment]
+    tool_id: arp-scan
+    parameters: {additional_args: "--localnet"}
+    limits: {max_tool_calls: 1, max_duration_seconds: 60, max_requests_per_second: 50}
+    internet_egress: false
+    approval_required: false
+    evidence_required: [tool_invocation_log, target_access_log]
+
+  # Connectivity test — the CORE segmentation check: can this segment reach a
+  # specific host:port in another segment? (nc -z probe)
+  connectivity-probe:
+    description: Test whether an authorised target host:port is reachable from here (nc probe).
+    interaction_mode: active
+    risk_tier: low
+    allowed_asset_types: [network_segment, host]
+    tool_id: nc
+    parameters: {additional_args: "-z -v -w 3"}
+    limits: {max_tool_calls: 1, max_duration_seconds: 30, max_requests_per_second: 10}
+    internet_egress: false
+    approval_required: false
+    evidence_required: [tool_invocation_log, target_access_log]

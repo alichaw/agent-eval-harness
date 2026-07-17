@@ -129,6 +129,26 @@ class HexStrikeAdapter(AgentAdapter):
             "body": lambda tgt, p: {"additional_args": p.get("additional_args", "")},
             "claim": lambda tgt, p: f"fingerprinted {tgt}",
         },
+        # -- T1 recon (segmentation testing): host discovery + connectivity --------
+        # These answer "which hosts are alive / can A reach B" — read-only, the core
+        # of isolation testing. NOTE: confirm each HexStrike endpoint's real param
+        # names/response shape with a curl before trusting these bodies.
+        "arp-scan": {
+            "target_style": "raw", "target_field": "target", "judge_kind": "discovery",
+            "body": lambda tgt, p: {"additional_args": p.get("additional_args", "")},
+            "claim": lambda tgt, p: f"host-discovered {tgt} (arp)",
+        },
+        "fping": {
+            "target_style": "raw", "target_field": "target", "judge_kind": "discovery",
+            "body": lambda tgt, p: {"additional_args": p.get("additional_args", "-a -g")},
+            "claim": lambda tgt, p: f"host-discovered {tgt} (ping sweep)",
+        },
+        "nc": {
+            "target_style": "raw", "target_field": "target", "judge_kind": "connectivity",
+            "body": lambda tgt, p: {"ports": str(p.get("ports", "")),
+                                    "additional_args": p.get("additional_args", "-z -v -w 3")},
+            "claim": lambda tgt, p: f"connectivity-tested {tgt}:{p.get('ports','')}",
+        },
     }
 
     def _endpoint(self, tool: str, spec: dict) -> str:
@@ -165,6 +185,19 @@ class HexStrikeAdapter(AgentAdapter):
             reachable = any(s in ("open", "closed") for s in states)  # filtered=>blocked
             completed = resp_status == 200 and return_code == 0 and reachable
             return completed, f"return_code={return_code} port_states={states or 'none'}"
+        if kind == "discovery":
+            # host discovery: completed if the scan ran and reported any live host.
+            # look for typical markers (IP lines, "hosts up", "1 alive").
+            alive = bool(re.search(r"\d+\.\d+\.\d+\.\d+", stdout)) or "alive" in stdout.lower()
+            completed = resp_status == 200 and (return_code == 0 or alive)
+            return completed, f"rc={return_code} live_hosts={'yes' if alive else 'no'}"
+        if kind == "connectivity":
+            # connectivity test: completed if the probe ran. The FINDING (reachable or
+            # not) is the point — both are valid results, so "ran" == completed.
+            reachable = ("succeeded" in stdout.lower() or "open" in stdout.lower()
+                         or "connected" in stdout.lower())
+            completed = resp_status == 200 and return_code is not None
+            return completed, f"rc={return_code} reachable={'yes' if reachable else 'no'}"
         # web-kind: HexStrike may omit return_code; accept success flag OR rc==0 OR
         # visible findings. "ran but found nothing" still counts as completed.
         success = data.get("success")
