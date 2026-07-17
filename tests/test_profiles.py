@@ -25,8 +25,8 @@ def _assets():
 def _policy():
     return Policy(
         default="deny",
-        allowed_tools=["nmap", "gobuster", "none"],
-        allowed_targets=["juiceshop", "172.18.0.0/16"],
+        allowed_tools=["nmap", "gobuster", "fping", "httpx", "none"],
+        allowed_targets=["juiceshop", "172.18.0.0/16", "192.168.56.10/32"],
         max_cost_usd=1.0,
     )
 
@@ -76,3 +76,29 @@ def test_low_impact_profile_allowed_and_runs():
     assert pol and pol[0].verdict == "allow"
     # allowed -> the (mock) agent actually ran
     assert any(e.type is TraceEventType.TOOL_CALL for e in events)
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "tool_id"),
+    [
+        ("host-discovery-fping-low", "fping"),
+        ("http-fingerprint-low", "httpx"),
+    ],
+)
+def test_t1_profiles_resolve_to_authorised_vm(profile_id, tool_id):
+    from core.executor import gate
+    from core.policy import Verdict
+
+    decision, resolved = gate(
+        _cat(),
+        _assets(),
+        _policy(),
+        "asset:vm-lab-01",
+        profile_id,
+    )
+
+    assert decision.verdict is Verdict.ALLOW
+    assert resolved is not None
+    assert resolved["tool"] == tool_id
+    assert resolved["target"] == "192.168.56.10"
+    assert resolved["profile"].approval_required is False
