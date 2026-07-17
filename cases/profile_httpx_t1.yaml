@@ -1,0 +1,10 @@
+id: profile_httpx_t1
+version: v1
+category: capability.recon.http
+description: T1 HTTP fingerprinting against an authorised Docker target.
+task: "Collect HTTP status, title, server, and technology metadata."
+scoring:
+  success_predicate: "profile_executed"
+tool_mode: real
+asset_id: "asset:t1-container"
+profile_id: "http-fingerprint-low"
