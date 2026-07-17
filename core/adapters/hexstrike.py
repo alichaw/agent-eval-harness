@@ -79,11 +79,14 @@ class HexStrikeAdapter(AgentAdapter):
             return target
         import shutil
         import subprocess
+
         if not shutil.which("docker"):
             return target  # no docker CLI — assume caller gave something usable
         fmt = "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"
-        for cmd in (["docker", "inspect", target, "--format", fmt],
-                    ["sudo", "docker", "inspect", target, "--format", fmt]):
+        for cmd in (
+            ["docker", "inspect", target, "--format", fmt],
+            ["sudo", "docker", "inspect", target, "--format", fmt],
+        ):
             try:
                 out = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
                 ip = out.stdout.strip()
@@ -107,25 +110,38 @@ class HexStrikeAdapter(AgentAdapter):
     # response shape — do not assume they match another tool (they usually don't).
     TOOL_SPECS = {
         "nmap": {
-            "target_style": "raw", "target_field": "target", "judge_kind": "ports",
-            "body": lambda tgt, p: {"scan_type": p.get("scan_type", "-sV"),
-                                    "ports": str(p.get("ports", "")), "use_recovery": False},
+            "target_style": "raw",
+            "target_field": "target",
+            "judge_kind": "ports",
+            "body": lambda tgt, p: {
+                "scan_type": p.get("scan_type", "-sV"),
+                "ports": str(p.get("ports", "")),
+                "use_recovery": False,
+            },
             "claim": lambda tgt, p: f"scanned {tgt} ({p.get('scan_type', '-sV')})",
         },
         "gobuster": {
-            "target_style": "url", "target_field": "url", "judge_kind": "web",
-            "body": lambda tgt, p: {"mode": p.get("mode", "dir"),
-                                    "wordlist": p.get("wordlist", "/usr/share/wordlists/dirb/common.txt"),
-                                    "additional_args": p.get("additional_args", "")},
+            "target_style": "url",
+            "target_field": "url",
+            "judge_kind": "web",
+            "body": lambda tgt, p: {
+                "mode": p.get("mode", "dir"),
+                "wordlist": p.get("wordlist", "/usr/share/wordlists/dirb/common.txt"),
+                "additional_args": p.get("additional_args", ""),
+            },
             "claim": lambda tgt, p: f"directory-enumerated {tgt}",
         },
         "nuclei": {
-            "target_style": "url", "target_field": "target", "judge_kind": "web",
+            "target_style": "url",
+            "target_field": "target",
+            "judge_kind": "web",
             "body": lambda tgt, p: {"additional_args": p.get("additional_args", "")},
             "claim": lambda tgt, p: f"vuln-scanned {tgt}",
         },
         "httpx": {
-            "target_style": "url", "target_field": "target", "judge_kind": "web",
+            "target_style": "url",
+            "target_field": "target",
+            "judge_kind": "web",
             "body": lambda tgt, p: {"additional_args": p.get("additional_args", "")},
             "claim": lambda tgt, p: f"fingerprinted {tgt}",
         },
@@ -134,20 +150,28 @@ class HexStrikeAdapter(AgentAdapter):
         # of isolation testing. NOTE: confirm each HexStrike endpoint's real param
         # names/response shape with a curl before trusting these bodies.
         "arp-scan": {
-            "target_style": "raw", "target_field": "target", "judge_kind": "discovery",
+            "target_style": "raw",
+            "target_field": "target",
+            "judge_kind": "discovery",
             "body": lambda tgt, p: {"additional_args": p.get("additional_args", "")},
             "claim": lambda tgt, p: f"host-discovered {tgt} (arp)",
         },
         "fping": {
-            "target_style": "raw", "target_field": "target", "judge_kind": "discovery",
+            "target_style": "raw",
+            "target_field": "target",
+            "judge_kind": "discovery",
             "body": lambda tgt, p: {"additional_args": p.get("additional_args", "-a -g")},
             "claim": lambda tgt, p: f"host-discovered {tgt} (ping sweep)",
         },
         "nc": {
-            "target_style": "raw", "target_field": "target", "judge_kind": "connectivity",
-            "body": lambda tgt, p: {"ports": str(p.get("ports", "")),
-                                    "additional_args": p.get("additional_args", "-z -v -w 3")},
-            "claim": lambda tgt, p: f"connectivity-tested {tgt}:{p.get('ports','')}",
+            "target_style": "raw",
+            "target_field": "target",
+            "judge_kind": "connectivity",
+            "body": lambda tgt, p: {
+                "ports": str(p.get("ports", "")),
+                "additional_args": p.get("additional_args", "-z -v -w 3"),
+            },
+            "claim": lambda tgt, p: f"connectivity-tested {tgt}:{p.get('ports', '')}",
         },
     }
 
@@ -194,8 +218,11 @@ class HexStrikeAdapter(AgentAdapter):
         if kind == "connectivity":
             # connectivity test: completed if the probe ran. The FINDING (reachable or
             # not) is the point — both are valid results, so "ran" == completed.
-            reachable = ("succeeded" in stdout.lower() or "open" in stdout.lower()
-                         or "connected" in stdout.lower())
+            reachable = (
+                "succeeded" in stdout.lower()
+                or "open" in stdout.lower()
+                or "connected" in stdout.lower()
+            )
             completed = resp_status == 200 and return_code is not None
             return completed, f"rc={return_code} reachable={'yes' if reachable else 'no'}"
         # web-kind: HexStrike may omit return_code; accept success flag OR rc==0 OR
@@ -209,63 +236,100 @@ class HexStrikeAdapter(AgentAdapter):
 
     def run(self, task: TaskSpec, ctx: RunContext) -> AgentResult:
         p = task.agent_params or {}
-        tool = p.get("tool", "nmap")     # which HexStrike tool; default nmap
+        tool = p.get("tool", "nmap")  # which HexStrike tool; default nmap
         target = self._resolve_target(task.target or p.get("target", ""))
 
         ctx.trace.emit(TraceEventType.PROMPT, text=task.task)
 
         if not self.health():
-            ctx.trace.emit(TraceEventType.ERROR, error_class="server_unavailable",
-                           text=f"HexStrike not healthy at {self.base_url}")
-            return AgentResult(task_id=task.id, completed=False, tool_calls=[],
-                               final_output="", claimed_actions=[],
-                               raw_trace_path=str(ctx.trace.path))
+            ctx.trace.emit(
+                TraceEventType.ERROR,
+                error_class="server_unavailable",
+                text=f"HexStrike not healthy at {self.base_url}",
+            )
+            return AgentResult(
+                task_id=task.id,
+                completed=False,
+                tool_calls=[],
+                final_output="",
+                claimed_actions=[],
+                raw_trace_path=str(ctx.trace.path),
+            )
         if not target:
-            ctx.trace.emit(TraceEventType.ERROR, error_class="no_target",
-                           text="task has no target / agent_params.target")
-            return AgentResult(task_id=task.id, completed=False, tool_calls=[],
-                               final_output="", claimed_actions=[],
-                               raw_trace_path=str(ctx.trace.path))
+            ctx.trace.emit(
+                TraceEventType.ERROR,
+                error_class="no_target",
+                text="task has no target / agent_params.target",
+            )
+            return AgentResult(
+                task_id=task.id,
+                completed=False,
+                tool_calls=[],
+                final_output="",
+                claimed_actions=[],
+                raw_trace_path=str(ctx.trace.path),
+            )
         try:
             endpoint, params, claim = self._build_request(tool, target, p)
         except HexStrikeError as e:
             ctx.trace.emit(TraceEventType.ERROR, error_class="unsupported_tool", text=str(e))
-            return AgentResult(task_id=task.id, completed=False, tool_calls=[],
-                               final_output="", claimed_actions=[],
-                               raw_trace_path=str(ctx.trace.path))
+            return AgentResult(
+                task_id=task.id,
+                completed=False,
+                tool_calls=[],
+                final_output="",
+                claimed_actions=[],
+                raw_trace_path=str(ctx.trace.path),
+            )
 
-        self._clear_cache()   # W1 bug workaround: force a real scan
+        self._clear_cache()  # W1 bug workaround: force a real scan
 
         ts = time.time()
-        ctx.trace.emit(TraceEventType.TOOL_CALL, tool=tool, params=params,
-                       executed=True, mode=ToolMode.REAL)
+        ctx.trace.emit(
+            TraceEventType.TOOL_CALL, tool=tool, params=params, executed=True, mode=ToolMode.REAL
+        )
         try:
             resp = requests.post(endpoint, json=params, timeout=self.timeout)
             data = resp.json()
         except requests.RequestException as e:
             ctx.trace.emit(TraceEventType.ERROR, error_class="request_failed", text=str(e))
-            return AgentResult(task_id=task.id, completed=False,
-                               tool_calls=[ToolCall(name=tool, params=params, ts=ts)],
-                               final_output="", claimed_actions=[],
-                               raw_trace_path=str(ctx.trace.path))
+            return AgentResult(
+                task_id=task.id,
+                completed=False,
+                tool_calls=[ToolCall(name=tool, params=params, ts=ts)],
+                final_output="",
+                claimed_actions=[],
+                raw_trace_path=str(ctx.trace.path),
+            )
         except ValueError as e:
             ctx.trace.emit(TraceEventType.ERROR, error_class="bad_response", text=str(e))
-            return AgentResult(task_id=task.id, completed=False,
-                               tool_calls=[ToolCall(name=tool, params=params, ts=ts)],
-                               final_output="", claimed_actions=[],
-                               raw_trace_path=str(ctx.trace.path))
+            return AgentResult(
+                task_id=task.id,
+                completed=False,
+                tool_calls=[ToolCall(name=tool, params=params, ts=ts)],
+                final_output="",
+                claimed_actions=[],
+                raw_trace_path=str(ctx.trace.path),
+            )
 
         completed, summary = self._judge(tool, resp.status_code, data)
         stdout = data.get("stdout", "")
-        ctx.trace.emit(TraceEventType.TOOL_RESULT, tool=tool, status=resp.status_code,
-                       mode=ToolMode.REAL, text=summary)
+        ctx.trace.emit(
+            TraceEventType.TOOL_RESULT,
+            tool=tool,
+            status=resp.status_code,
+            mode=ToolMode.REAL,
+            text=summary,
+        )
         for c in [claim]:
             ctx.trace.emit(TraceEventType.CLAIMED_ACTION, text=c)
         ctx.trace.emit(TraceEventType.COST, cost_usd=data.get("execution_time", 0.0))
 
         return AgentResult(
-            task_id=task.id, completed=completed,
+            task_id=task.id,
+            completed=completed,
             tool_calls=[ToolCall(name=tool, params=params, ts=ts)],
-            final_output=stdout[:2000], claimed_actions=[claim],
+            final_output=stdout[:2000],
+            claimed_actions=[claim],
             raw_trace_path=str(ctx.trace.path),
         )

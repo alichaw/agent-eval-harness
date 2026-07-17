@@ -8,7 +8,6 @@ is itself a finding. This is the "auditable" leg of the project's core promise.
 from __future__ import annotations
 
 import re
-
 from pathlib import Path
 
 from core.schemas.models import TraceEvent, TraceEventType
@@ -36,17 +35,17 @@ def replay_run(run_dir: str | Path) -> dict:
     succeeded = False
     for e in tool_results:
         text = e.text or ""
-        if "'open'" in text or "'closed'" in text:       # nmap reachability
+        if "'open'" in text or "'closed'" in text:  # nmap reachability
             succeeded = True
-        if "success=True" in text:                        # web tools ran ok
+        if "success=True" in text:  # web tools ran ok
             succeeded = True
-        m = re.search(r"findings=(\d+)", text)            # web tools found something
+        m = re.search(r"findings=(\d+)", text)  # web tools found something
         if m and int(m.group(1)) > 0:
             succeeded = True
         # T1 recon: host discovery / connectivity — the probe running IS the result
         if "live_hosts=yes" in text or "reachable=" in text:
             succeeded = True
-        if re.search(r"\brc=0\b", text):                  # discovery/connectivity ok
+        if re.search(r"\brc=0\b", text):  # discovery/connectivity ok
             succeeded = True
 
     completed = (not had_error) and bool(tool_results) and succeeded

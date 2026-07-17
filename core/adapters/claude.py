@@ -19,8 +19,8 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass, field
-from typing import Callable
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from core.adapters.base import AgentAdapter, RunContext
 from core.schemas.models import AgentResult, TaskSpec, TraceEventType
@@ -29,6 +29,7 @@ from core.schemas.models import AgentResult, TaskSpec, TraceEventType
 @dataclass
 class Proposal:
     """The ONLY thing we extract from Claude's output. Nothing else is read."""
+
     asset_id: str = ""
     profile_id: str = ""
     reasoning: str = ""
@@ -88,12 +89,15 @@ profile_id are read."""
 def _anthropic_llm(model: str) -> Callable[[str, str], str]:
     """Real LLM call. Reads ANTHROPIC_API_KEY from the environment (never hard-coded)."""
     import anthropic
+
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
     def call(system: str, user: str) -> str:
         resp = client.messages.create(
-            model=model, max_tokens=1024,
-            system=system, messages=[{"role": "user", "content": user}],
+            model=model,
+            max_tokens=1024,
+            system=system,
+            messages=[{"role": "user", "content": user}],
         )
         return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
 
@@ -103,14 +107,21 @@ def _anthropic_llm(model: str) -> Callable[[str, str], str]:
 class ClaudeAdapter(AgentAdapter):
     name = "claude"
 
-    def __init__(self, catalog, assets, model: str = "claude-sonnet-4-6",
-                 llm_fn: Callable[[str, str], str] | None = None,
-                 executor=None, policy=None, max_steps: int = 6):
+    def __init__(
+        self,
+        catalog,
+        assets,
+        model: str = "claude-sonnet-4-6",
+        llm_fn: Callable[[str, str], str] | None = None,
+        executor=None,
+        policy=None,
+        max_steps: int = 6,
+    ):
         self.catalog = catalog
         self.assets = assets
         self.model = model
         self.llm_fn = llm_fn or _anthropic_llm(model)
-        self.executor = executor      # e.g. HexStrikeAdapter; None = decide-only (stage 1)
+        self.executor = executor  # e.g. HexStrikeAdapter; None = decide-only (stage 1)
         self.policy = policy
         self.max_steps = max_steps
 
@@ -134,10 +145,10 @@ class ClaudeAdapter(AgentAdapter):
 
         claimed: list[str] = []
         history: list[str] = []
-        executed_profiles: set[str] = set()   # loop guard: profiles already run
+        executed_profiles: set[str] = set()  # loop guard: profiles already run
         completed = False
 
-        for step in range(self.max_steps):
+        for _step in range(self.max_steps):
             convo = f"Task: {task.task}\n\n{menu}\n"
             if history:
                 convo += "\nResults so far:\n" + "\n".join(history)
@@ -156,21 +167,33 @@ class ClaudeAdapter(AgentAdapter):
             if self.executor is None:
                 # stage-1 behaviour: decide-only, no execution
                 from core.profiles import ProfileError
+
                 try:
-                    self.catalog.get(prop.profile_id); self.assets.resolve(prop.asset_id)
+                    self.catalog.get(prop.profile_id)
+                    self.assets.resolve(prop.asset_id)
                     ok = True
                 except ProfileError:
                     ok = False
-                ctx.trace.emit(TraceEventType.POLICY_EVENT,
-                               rule="profile_proposed" if ok else "invalid_profile_proposed",
-                               verdict="allow" if ok else "deny",
-                               text=f"{prop.asset_id} / {prop.profile_id}")
+                ctx.trace.emit(
+                    TraceEventType.POLICY_EVENT,
+                    rule="profile_proposed" if ok else "invalid_profile_proposed",
+                    verdict="allow" if ok else "deny",
+                    text=f"{prop.asset_id} / {prop.profile_id}",
+                )
                 completed = ok
                 break
 
             # stage-2: gate + execute the proposed profile
-            step_res = execute_profile(self.executor, self.catalog, self.assets,
-                                       self.policy, prop.asset_id, prop.profile_id, task, ctx)
+            step_res = execute_profile(
+                self.executor,
+                self.catalog,
+                self.assets,
+                self.policy,
+                prop.asset_id,
+                prop.profile_id,
+                task,
+                ctx,
+            )
             if step_res.admitted:
                 claimed.append(f"executed '{prop.profile_id}'")
                 out = step_res.output[:400] or "(no output)"
@@ -179,13 +202,16 @@ class ClaudeAdapter(AgentAdapter):
                 # tell the model it's done to prevent an infinite retry loop when a
                 # tool returns few/no findings.
                 if prop.profile_id in executed_profiles:
-                    history.append(f"NOTE: '{prop.profile_id}' already executed; "
-                                   f"do not repeat it. Set done=true if the objective "
-                                   f"is met, or choose a DIFFERENT profile.")
+                    history.append(
+                        f"NOTE: '{prop.profile_id}' already executed; "
+                        f"do not repeat it. Set done=true if the objective "
+                        f"is met, or choose a DIFFERENT profile."
+                    )
                 executed_profiles.add(prop.profile_id)
             else:
-                history.append(f"[{prop.profile_id}] BLOCKED by policy: "
-                               f"{step_res.verdict}/{step_res.rule}")
+                history.append(
+                    f"[{prop.profile_id}] BLOCKED by policy: {step_res.verdict}/{step_res.rule}"
+                )
                 if step_res.verdict != "allow":
                     break
 
@@ -193,7 +219,10 @@ class ClaudeAdapter(AgentAdapter):
             ctx.trace.emit(TraceEventType.CLAIMED_ACTION, text=c)
 
         return AgentResult(
-            task_id=task.id, completed=completed, tool_calls=[],
+            task_id=task.id,
+            completed=completed,
+            tool_calls=[],
             final_output="\n".join(history)[:2000],
-            claimed_actions=claimed, raw_trace_path=str(ctx.trace.path),
+            claimed_actions=claimed,
+            raw_trace_path=str(ctx.trace.path),
         )

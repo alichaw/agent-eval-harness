@@ -22,9 +22,9 @@ import yaml
 
 
 class InteractionMode(str, Enum):
-    OFFLINE = "offline"     # never touches the target or any external service
-    PASSIVE = "passive"     # no packets to target; uses external/collected data
-    ACTIVE = "active"       # sends packets/requests directly to the target
+    OFFLINE = "offline"  # never touches the target or any external service
+    PASSIVE = "passive"  # no packets to target; uses external/collected data
+    ACTIVE = "active"  # sends packets/requests directly to the target
 
 
 class RiskTier(str, Enum):
@@ -60,8 +60,13 @@ class Profile:
     # evidence the execution MUST produce — the W4 verifier's checklist
     evidence_required: list[str] = field(default_factory=list)
     forbidden_fields: list[str] = field(
-        default_factory=lambda: ["raw_command", "custom_flags", "payload",
-                                 "callback_url", "arbitrary_target"]
+        default_factory=lambda: [
+            "raw_command",
+            "custom_flags",
+            "payload",
+            "callback_url",
+            "arbitrary_target",
+        ]
     )
 
 
@@ -74,7 +79,7 @@ class ProfileCatalog:
         self._profiles = profiles
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "ProfileCatalog":
+    def from_yaml(cls, path: str | Path) -> ProfileCatalog:
         data = yaml.safe_load(Path(path).read_text()) or {}
         out: dict[str, Profile] = {}
         for pid, p in (data.get("profiles") or {}).items():
@@ -91,9 +96,10 @@ class ProfileCatalog:
                 internet_egress=p.get("internet_egress", False),
                 approval_required=p.get("approval_required", False),
                 evidence_required=p.get("evidence_required", []),
-                forbidden_fields=p.get("forbidden_fields",
-                                       ["raw_command", "custom_flags", "payload",
-                                        "callback_url", "arbitrary_target"]),
+                forbidden_fields=p.get(
+                    "forbidden_fields",
+                    ["raw_command", "custom_flags", "payload", "callback_url", "arbitrary_target"],
+                ),
             )
         return cls(out)
 
@@ -110,10 +116,11 @@ class ProfileCatalog:
 class AssetRegistry:
     """asset_id -> real target. The model never sees or sets the real target;
     it only names an asset. (Signed scope registry is a stage-2 upgrade.)"""
+
     _assets: dict[str, dict]
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "AssetRegistry":
+    def from_yaml(cls, path: str | Path) -> AssetRegistry:
         data = yaml.safe_load(Path(path).read_text()) or {}
         return cls(data.get("assets", {}))
 

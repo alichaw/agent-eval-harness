@@ -4,14 +4,12 @@ Uses MockAgent so this runs offline (no HexStrike server needed).
 """
 
 import json
-from pathlib import Path
 
 import pytest
 
 from core.adapters.mock import MockAgent
 from core.controller import Controller, load_case, make_run_id
 from core.replay import replay_run
-
 
 CASE_YAML = """
 id: recon_juiceshop

@@ -47,12 +47,17 @@ def make_run_id(case: TaskSpec, case_path: str | Path, now: datetime | None = No
 
 
 class Controller:
-    def __init__(self, runs_root: str | Path = "runs", policy: "Policy | None" = None,
-                 catalog=None, assets=None):
+    def __init__(
+        self,
+        runs_root: str | Path = "runs",
+        policy: Policy | None = None,
+        catalog=None,
+        assets=None,
+    ):
         self.runs_root = Path(runs_root)
         self.policy = policy
-        self.catalog = catalog   # ProfileCatalog | None (enables profile-driven mode)
-        self.assets = assets     # AssetRegistry | None
+        self.catalog = catalog  # ProfileCatalog | None (enables profile-driven mode)
+        self.assets = assets  # AssetRegistry | None
 
     def _resolve_profile(self, case):
         """If the case is profile-driven ({asset_id, profile_id}), resolve it into a
@@ -61,20 +66,21 @@ class Controller:
         if not case.profile_id:
             return None
         from core.profiles import ProfileError
+
         if self.catalog is None or self.assets is None:
             raise ProfileError("profile-driven case but no catalog/assets loaded")
-        profile = self.catalog.get(case.profile_id)            # fail-closed on unknown
-        asset = self.assets.resolve(case.asset_id)             # fail-closed on unknown
+        profile = self.catalog.get(case.profile_id)  # fail-closed on unknown
+        asset = self.assets.resolve(case.asset_id)  # fail-closed on unknown
         return {
             "tool": profile.tool_id,
             "target": asset.get("target", ""),
             "params": dict(profile.parameters, ports=asset.get("ports", "")),
             "profile": profile,
         }
-   # optional; when set, every run is policy-gated
 
-    def run_case(self, case_path: str | Path, agent: AgentAdapter,
-                 seed: int = 0) -> Path:
+    # optional; when set, every run is policy-gated
+
+    def run_case(self, case_path: str | Path, agent: AgentAdapter, seed: int = 0) -> Path:
         """Execute one case with one agent; return the run directory."""
         case = load_case(case_path)
 
@@ -105,10 +111,11 @@ class Controller:
         # is prevented, not merely logged after the fact.
         # resolve a profile-driven case into concrete (tool, target, params) — the
         # model only named {asset_id, profile_id}; the Harness derives the rest.
-        resolved = self._resolve_profile(case)   # None for legacy cases
+        resolved = self._resolve_profile(case)  # None for legacy cases
 
         if self.policy is not None:
             from core.policy import ActionRequest, Verdict
+
             if resolved is not None:
                 # RISK IS DECIDED BY THE PROFILE, NOT THE TOOL NAME. The same nmap is
                 # low-risk under an A1 profile (5 ports) and needs approval under A2
@@ -118,7 +125,7 @@ class Controller:
                     default=self.policy.default,
                     allowed_tools=self.policy.allowed_tools,
                     allowed_targets=self.policy.allowed_targets,
-                    active_tools=[],   # profile decides approval, not tool name
+                    active_tools=[],  # profile decides approval, not tool name
                     max_cost_usd=self.policy.max_cost_usd,
                     deny_flags=self.policy.deny_flags,
                 )
@@ -126,17 +133,20 @@ class Controller:
                     tool=resolved["tool"],
                     target=resolved["target"],
                     params=resolved["params"],
-                    target_source="case",   # profile targets come from the asset registry = trusted
+                    target_source="case",  # profile targets come from the asset registry = trusted
                 )
                 decision = prof_policy.check(req)
                 # a profile that requires approval short-circuits to REQUIRE_APPROVAL
                 if decision.verdict is Verdict.ALLOW and resolved["profile"].approval_required:
                     from core.policy import PolicyDecision
+
                     decision = PolicyDecision(
-                        Verdict.REQUIRE_APPROVAL, "profile_needs_approval",
-                        f"profile '{case.profile_id}' (risk={resolved['profile'].risk_tier.value})")
+                        Verdict.REQUIRE_APPROVAL,
+                        "profile_needs_approval",
+                        f"profile '{case.profile_id}' (risk={resolved['profile'].risk_tier.value})",
+                    )
             else:
-                tool = (case.allowed_tools[0] if case.allowed_tools else "")
+                tool = case.allowed_tools[0] if case.allowed_tools else ""
                 requested_tool = case.agent_params.get("tool", tool)
                 req = ActionRequest(
                     tool=requested_tool,
@@ -177,11 +187,13 @@ class Controller:
         # claimed_actions against the trace evidence, and against the profile's
         # required evidence. Emit a verification event per claim.
         from core.verifier import Verifier, load_env_evidence, load_trace
+
         events = load_trace(run_dir)
-        env_evidence = load_env_evidence(run_dir)   # independent, agent-tamper-proof
+        env_evidence = load_env_evidence(run_dir)  # independent, agent-tamper-proof
         evidence_required = resolved["profile"].evidence_required if resolved else []
-        report = Verifier().verify(result.claimed_actions, events, evidence_required,
-                                   env_evidence=env_evidence)
+        report = Verifier().verify(
+            result.claimed_actions, events, evidence_required, env_evidence=env_evidence
+        )
         for cv in report.claim_verdicts:
             ctx.trace.emit(
                 TraceEventType.VERIFICATION,
@@ -195,6 +207,7 @@ class Controller:
         # and a later replay always agree — that's what "auditable" means here.
         # We still keep the agent's self-reported completion for comparison.
         from core.replay import replay_run
+
         verdict = replay_run(run_dir)
 
         result_doc = {

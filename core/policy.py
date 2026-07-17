@@ -24,13 +24,13 @@ import yaml
 class Verdict(str, Enum):
     ALLOW = "allow"
     DENY = "deny"
-    REQUIRE_APPROVAL = "require_approval"   # architecture in place; approval flow lands in W5
+    REQUIRE_APPROVAL = "require_approval"  # architecture in place; approval flow lands in W5
 
 
 @dataclass
 class PolicyDecision:
     verdict: Verdict
-    rule: str            # machine-readable reason, e.g. "target_not_allowed"
+    rule: str  # machine-readable reason, e.g. "target_not_allowed"
     detail: str = ""
 
     @property
@@ -51,10 +51,11 @@ class ActionRequest:
     """One action to be checked. `target_source` is what enables taint tracking:
     'case' = authorised in the test case (trusted); 'tool_output' = parsed from a
     tool's output at runtime (untrusted, possibly injected)."""
+
     tool: str
     target: str = ""
     params: dict = field(default_factory=dict)
-    target_source: str = "case"        # "case" (trusted) | "tool_output" (tainted)
+    target_source: str = "case"  # "case" (trusted) | "tool_output" (tainted)
     cost_so_far: float = 0.0
 
 
@@ -69,7 +70,7 @@ class Policy:
     deny_flags: dict[str, list[str]] = field(default_factory=dict)
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "Policy":
+    def from_yaml(cls, path: str | Path) -> Policy:
         # FAIL-CLOSED: a broken policy file must not silently allow everything.
         try:
             data = yaml.safe_load(Path(path).read_text()) or {}
@@ -102,10 +103,8 @@ class Policy:
 
         return False
 
-
     def _target_allowed(self, target: str) -> bool:
         return self._target_matches(target, self.allowed_targets)
-
 
     def _target_denied(self, target: str) -> bool:
         return self._target_matches(target, self.denied_targets)
@@ -120,21 +119,27 @@ class Policy:
     def _check(self, req: ActionRequest) -> PolicyDecision:
         # 0. taint: a target that came from tool output is untrusted (injection risk)
         if req.target and req.target_source != "case":
-            return PolicyDecision(Verdict.DENY, "tainted_target",
-                                  f"target '{req.target}' came from {req.target_source}")
+            return PolicyDecision(
+                Verdict.DENY,
+                "tainted_target",
+                f"target '{req.target}' came from {req.target_source}",
+            )
 
         # 1. raw_command / custom_flags: bypass vectors -> deny outright
         if "raw_command" in req.params:
-            return PolicyDecision(Verdict.DENY, "raw_command_forbidden",
-                                  "raw_command bypasses the tool allowlist")
+            return PolicyDecision(
+                Verdict.DENY, "raw_command_forbidden", "raw_command bypasses the tool allowlist"
+            )
         if "custom_flags" in req.params:
-            return PolicyDecision(Verdict.DENY, "custom_flags_forbidden",
-                                  "custom_flags are not permitted")
+            return PolicyDecision(
+                Verdict.DENY, "custom_flags_forbidden", "custom_flags are not permitted"
+            )
 
         # 2. tool allowlist (default-deny)
         if req.tool not in self.allowed_tools:
-            return PolicyDecision(Verdict.DENY, "tool_not_allowed",
-                                  f"'{req.tool}' not in allowed_tools")
+            return PolicyDecision(
+                Verdict.DENY, "tool_not_allowed", f"'{req.tool}' not in allowed_tools"
+            )
 
         # 3. hard exclusion: denied targets always win over allowed targets
         if req.target and self._target_denied(req.target):
@@ -151,22 +156,27 @@ class Policy:
                 "target_not_allowed",
                 f"'{req.target}' not in allowed_targets",
             )
-            
+
         # 4. cost ceiling
         if req.cost_so_far > self.max_cost_usd:
-            return PolicyDecision(Verdict.DENY, "cost_exceeded",
-                                  f"{req.cost_so_far} > {self.max_cost_usd}")
+            return PolicyDecision(
+                Verdict.DENY, "cost_exceeded", f"{req.cost_so_far} > {self.max_cost_usd}"
+            )
 
         # 5. deny_flags (extra blacklist layer, only on top of the allowlist)
         for bad in self.deny_flags.get(req.tool, []):
             if bad.lower() in f"{req.params}".lower():
-                return PolicyDecision(Verdict.DENY, "denied_flag",
-                                      f"'{bad}' present for '{req.tool}'")
+                return PolicyDecision(
+                    Verdict.DENY, "denied_flag", f"'{bad}' present for '{req.tool}'"
+                )
 
         # 6. active tools need approval (architecture ready; approval flow = W5)
         if req.tool in self.active_tools:
-            return PolicyDecision(Verdict.REQUIRE_APPROVAL, "active_scan_needs_approval",
-                                  f"'{req.tool}' is an active scan")
+            return PolicyDecision(
+                Verdict.REQUIRE_APPROVAL,
+                "active_scan_needs_approval",
+                f"'{req.tool}' is an active scan",
+            )
 
         return PolicyDecision(Verdict.ALLOW, "allowed")
 

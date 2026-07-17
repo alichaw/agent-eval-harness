@@ -48,8 +48,8 @@ def test_fixtures_exist():
 def test_valid_case_loads(path: Path):
     case = load_case(path)
     assert isinstance(case, TaskSpec)
-    assert case.id                          # non-empty id
-    assert case.scoring.success_predicate   # scoring actually parsed
+    assert case.id  # non-empty id
+    assert case.scoring.success_predicate  # scoring actually parsed
 
 
 @pytest.mark.parametrize("path", INVALID_CASES, ids=lambda p: p.name)

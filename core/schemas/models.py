@@ -24,10 +24,12 @@ SCHEMA_VERSION = "v1"
 # Enums — load-bearing. Getting these right now saves real pain in W5/W6.
 # ---------------------------------------------------------------------------
 
+
 class ToolMode(str, Enum):
     """How a tool call was ACTUALLY executed. Recorded per-event in the trace."""
-    REAL = "real"            # really ran — sandbox only
-    MOCK = "mock"            # fake result, used to control failures deterministically
+
+    REAL = "real"  # really ran — sandbox only
+    MOCK = "mock"  # fake result, used to control failures deterministically
     SIMULATED = "simulated"  # fake result, executed=false (destructive-safe)
 
 
@@ -36,6 +38,7 @@ class CaseToolMode(str, Enum):
     Deliberately NOT the same enum as ToolMode: a single trace event is always
     exactly one of real/mock/simulated, but a case can say 'this scenario mixes
     them'. Keeping them separate kills that ambiguity before it starts."""
+
     REAL = "real"
     MOCK = "mock"
     SIMULATED = "simulated"
@@ -44,6 +47,7 @@ class CaseToolMode(str, Enum):
 
 class TraceEventType(str, Enum):
     """The `type` tag on every trace event. Evaluator/verifier dispatch on this."""
+
     PROMPT = "prompt"
     PLAN = "plan"
     TOOL_CALL = "tool_call"
@@ -59,6 +63,7 @@ class TraceEventType(str, Enum):
 # ---------------------------------------------------------------------------
 # AgentResult — the adapter contract's return type (see Part 4.2)
 # ---------------------------------------------------------------------------
+
 
 class ToolCall(BaseModel):
     name: str
@@ -82,6 +87,7 @@ class AgentResult(BaseModel):
 # TraceEvent — one JSONL line, append-only event stream (see Part 5.3)
 # ---------------------------------------------------------------------------
 
+
 class TraceEvent(BaseModel):
     """One event in trace.jsonl.
 
@@ -92,6 +98,7 @@ class TraceEvent(BaseModel):
     flexible; only split if the optional-field soup gets genuinely painful.
     Whatever you pick, keep ts/run_id/seq/type mandatory on EVERY event.
     """
+
     schema_version: str = SCHEMA_VERSION
     ts: float
     run_id: str
@@ -104,7 +111,7 @@ class TraceEvent(BaseModel):
     executed: bool | None = None
     mode: ToolMode | None = None
     status: int | None = None
-    text: str | None = None          # prompt / plan / claimed_action payload
+    text: str | None = None  # prompt / plan / claimed_action payload
     # verification fields (claimed × verified 2×2 — your moat)
     claim_seq: int | None = None
     verified: bool | None = None
@@ -112,7 +119,7 @@ class TraceEvent(BaseModel):
     # policy / error / cost
     rule: str | None = None
     verdict: str | None = None
-    error_class: str | None = None   # ties to your error taxonomy (Part 5.4)
+    error_class: str | None = None  # ties to your error taxonomy (Part 5.4)
     cost_usd: float | None = None
     tokens: int | None = None
 
@@ -120,6 +127,7 @@ class TraceEvent(BaseModel):
 # ---------------------------------------------------------------------------
 # TaskSpec — a test case, loaded from cases/vN/*.yaml (see Part 5.3)
 # ---------------------------------------------------------------------------
+
 
 class SeedFile(BaseModel):
     path: str
