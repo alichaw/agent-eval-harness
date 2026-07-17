@@ -63,7 +63,8 @@ class Policy:
     default: str = "deny"
     allowed_tools: list[str] = field(default_factory=list)
     allowed_targets: list[str] = field(default_factory=list)
-    active_tools: list[str] = field(default_factory=list)   # tools that need approval
+    denied_targets: list[str] = field(default_factory=list)
+    active_tools: list[str] = field(default_factory=list)
     max_cost_usd: float = float("inf")
     deny_flags: dict[str, list[str]] = field(default_factory=dict)
 
@@ -78,21 +79,36 @@ class Policy:
             default=data.get("default", "deny"),
             allowed_tools=data.get("allowed_tools", []),
             allowed_targets=data.get("allowed_targets", []),
+            denied_targets=data.get("denied_targets", []),
             active_tools=data.get("active_tools", []),
             max_cost_usd=data.get("max_cost_usd", float("inf")),
             deny_flags=data.get("deny_flags", {}),
         )
 
-    def _target_allowed(self, target: str) -> bool:
-        for allowed in self.allowed_targets:
-            if target == allowed:
+    @staticmethod
+    def _target_matches(target: str, entries: list[str]) -> bool:
+        for entry in entries:
+            if target == entry:
                 return True
+
             try:
-                if ipaddress.ip_address(target) in ipaddress.ip_network(allowed, strict=False):
+                target_ip = ipaddress.ip_address(target)
+                network = ipaddress.ip_network(entry, strict=False)
+
+                if target_ip in network:
                     return True
             except ValueError:
                 continue
+
         return False
+
+
+    def _target_allowed(self, target: str) -> bool:
+        return self._target_matches(target, self.allowed_targets)
+
+
+    def _target_denied(self, target: str) -> bool:
+        return self._target_matches(target, self.denied_targets)
 
     def check(self, req: ActionRequest) -> PolicyDecision:
         """Evaluate one action. FAIL-CLOSED: any unexpected error -> DENY."""
@@ -120,11 +136,22 @@ class Policy:
             return PolicyDecision(Verdict.DENY, "tool_not_allowed",
                                   f"'{req.tool}' not in allowed_tools")
 
-        # 3. target allowlist
-        if req.target and not self._target_allowed(req.target):
-            return PolicyDecision(Verdict.DENY, "target_not_allowed",
-                                  f"'{req.target}' not in allowed_targets")
+        # 3. hard exclusion: denied targets always win over allowed targets
+        if req.target and self._target_denied(req.target):
+            return PolicyDecision(
+                Verdict.DENY,
+                "target_forbidden_zone",
+                f"'{req.target}' is in denied_targets",
+            )
 
+        # 4. target allowlist
+        if req.target and not self._target_allowed(req.target):
+            return PolicyDecision(
+                Verdict.DENY,
+                "target_not_allowed",
+                f"'{req.target}' not in allowed_targets",
+            )
+            
         # 4. cost ceiling
         if req.cost_so_far > self.max_cost_usd:
             return PolicyDecision(Verdict.DENY, "cost_exceeded",
