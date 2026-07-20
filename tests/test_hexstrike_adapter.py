@@ -422,3 +422,63 @@ def test_cancellable_gobuster_rejects_unstructured_asset_arguments(tmp_path, mon
     assert result.completed is False
     errors = [event.text for event in _events(tmp_path) if event.type is TraceEventType.ERROR]
     assert any("unsupported gobuster asset arguments" in text for text in errors)
+
+
+
+def test_cancellable_nuclei_job_uses_only_bounded_structured_fields(tmp_path, monkeypatch):
+    def fake_get(url, **kwargs):
+        if url.endswith("/health"):
+            return _FakeResp({"status": "healthy"})
+        return _FakeResp(
+            {
+                "status": "succeeded",
+                "result": {
+                    "success": True,
+                    "return_code": 0,
+                    "stdout": "",
+                    "stderr": "",
+                },
+            }
+        )
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/api/cache/clear"):
+            return _FakeResp({})
+        assert url.endswith("/api/jobs/nuclei")
+        assert kwargs["headers"]["X-Job-Create-Token"] == "create-secret"
+        assert kwargs["json"] == {
+            "target": "http://172.18.0.2:3000",
+            "severity": "info,low,medium",
+            "tags": "tech,misconfig,exposure",
+            "rate_limit": 5,
+            "concurrency": 1,
+            "timeout": 5,
+        }
+        return _FakeResp(
+            {"job_id": "opaque-job", "job_token": "secret-capability"},
+            status=202,
+        )
+
+    monkeypatch.setattr("core.adapters.hexstrike.requests.get", fake_get)
+    monkeypatch.setattr("core.adapters.hexstrike.requests.post", fake_post)
+    ctx = _ctx(tmp_path)
+    ctx.kill_switch = KillSwitch(tmp_path / "KILL")
+    ctx.job_create_token = "create-secret"
+
+    result = HexStrikeAdapter().run(
+        _task(
+            tool="nuclei",
+            severity="info,low,medium",
+            tags="tech,misconfig,exposure",
+            rate_limit=5,
+            concurrency=1,
+            timeout=5,
+        ),
+        ctx,
+    )
+
+    assert result.completed is True
+    trace_text = (tmp_path / "trace.jsonl").read_text()
+    assert "create-secret" not in trace_text
+    assert "secret-capability" not in trace_text
+    assert "additional_args" not in trace_text
