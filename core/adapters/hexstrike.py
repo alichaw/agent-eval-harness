@@ -437,7 +437,7 @@ class HexStrikeAdapter(AgentAdapter):
             mode=ToolMode.REAL,
             text=judge_text,
         )
-        claims = [] if cancelled else [claim]
+        claims = [claim] if completed and not cancelled else []
         for action_claim in claims:
             ctx.trace.emit(TraceEventType.CLAIMED_ACTION, text=action_claim)
         ctx.trace.emit(TraceEventType.COST, cost_usd=data.get("execution_time", 0.0))
