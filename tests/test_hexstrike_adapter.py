@@ -448,8 +448,7 @@ def test_cancellable_nuclei_job_uses_only_bounded_structured_fields(tmp_path, mo
         assert kwargs["headers"]["X-Job-Create-Token"] == "create-secret"
         assert kwargs["json"] == {
             "target": "http://172.18.0.2:3000",
-            "severity": "info,low,medium",
-            "tags": "tech,misconfig,exposure",
+            "template_set": "baseline-web-v1",
             "rate_limit": 5,
             "concurrency": 1,
             "timeout": 5,
@@ -468,8 +467,7 @@ def test_cancellable_nuclei_job_uses_only_bounded_structured_fields(tmp_path, mo
     result = HexStrikeAdapter().run(
         _task(
             tool="nuclei",
-            severity="info,low,medium",
-            tags="tech,misconfig,exposure",
+            template_set="baseline-web-v1",
             rate_limit=5,
             concurrency=1,
             timeout=5,
