@@ -36,7 +36,7 @@ def _policy():
             "juiceshop",
             "t1-target",
             "172.18.0.0/16",
-            "192.168.56.10/32",
+            "192.0.2.10/32",
         ],
         max_cost_usd=1.0,
     )
@@ -109,7 +109,7 @@ def test_httpx_t1_profile_resolves_to_authorised_vm():
     assert decision.verdict is Verdict.ALLOW
     assert resolved is not None
     assert resolved["tool"] == "httpx"
-    assert resolved["target"] == "192.168.56.10"
+    assert resolved["target"] == _assets().resolve("asset:vm-lab-01")["target"]
 
     profile = resolved["profile"]
     assert profile.approval_required is False
