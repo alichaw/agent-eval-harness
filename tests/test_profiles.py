@@ -260,8 +260,7 @@ def test_bounded_nuclei_profile_requires_approval_and_has_no_raw_flags():
     assert profile.risk_tier.value == "medium"
 
     params = resolved["params"]
-    assert params["severity"] == "info,low,medium"
-    assert params["tags"] == "tech,misconfig,exposure"
+    assert params["template_set"] == "baseline-web-v1"
     assert params["rate_limit"] == 5
     assert params["concurrency"] == 1
     assert params["timeout"] == 5
