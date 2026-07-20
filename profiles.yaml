@@ -169,8 +169,8 @@ profiles:
       - target_access_log
 
   # T2 bounded vulnerability scan — always requires a single-use approval.
-  # Raw flags, custom templates, Interactsh, intrusive/fuzz/DoS/headless tags,
-  # high/critical severity, and multi-target input are structurally unavailable.
+  # Raw flags, custom templates, template paths, Interactsh, and multi-target
+  # input are structurally unavailable. The server owns the exact template set.
   web-vulnerability-scan-bounded:
     description: Run a bounded Nuclei scan against one authorised web lab asset.
     interaction_mode: active
@@ -178,8 +178,7 @@ profiles:
     allowed_asset_types: [web_lab]
     tool_id: nuclei
     parameters:
-      severity: "info,low,medium"
-      tags: "tech,misconfig,exposure"
+      template_set: "baseline-web-v1"
       rate_limit: 5
       concurrency: 1
       timeout: 5
