@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from core.redaction import Redactor
+from core.safety import ApprovalAuthority, KillSwitch
 from core.schemas.models import AgentResult, TaskSpec
 from core.trace.writer import TraceWriter
 
@@ -27,6 +28,9 @@ class RunContext:
     trace: TraceWriter
     seed: int = 0
     redactor: Redactor = field(default_factory=Redactor)
+    approval_token: str = ""
+    approval_authority: ApprovalAuthority | None = None
+    kill_switch: KillSwitch | None = None
 
     def redact(self, value):
         return self.redactor.value(value)
