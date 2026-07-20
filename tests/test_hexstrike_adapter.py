@@ -295,9 +295,7 @@ def test_cancellable_job_requires_create_capability(tmp_path, monkeypatch):
     assert "creation capability is required" in errors[-1].text
 
 
-def test_cancellable_httpx_job_uses_structured_authenticated_request(
-    tmp_path, monkeypatch
-):
+def test_cancellable_httpx_job_uses_structured_authenticated_request(tmp_path, monkeypatch):
     def fake_get(url, **kwargs):
         if url.endswith("/health"):
             return _FakeResp({"status": "healthy"})
@@ -351,9 +349,7 @@ def test_cancellable_httpx_job_uses_structured_authenticated_request(
     assert "secret-capability" not in trace_text
 
 
-def test_cancellable_gobuster_job_converts_only_safe_asset_argument(
-    tmp_path, monkeypatch
-):
+def test_cancellable_gobuster_job_converts_only_safe_asset_argument(tmp_path, monkeypatch):
     def fake_get(url, **kwargs):
         if url.endswith("/health"):
             return _FakeResp({"status": "healthy"})
@@ -405,9 +401,7 @@ def test_cancellable_gobuster_job_converts_only_safe_asset_argument(
     assert "secret-capability" not in (tmp_path / "trace.jsonl").read_text()
 
 
-def test_cancellable_gobuster_rejects_unstructured_asset_arguments(
-    tmp_path, monkeypatch
-):
+def test_cancellable_gobuster_rejects_unstructured_asset_arguments(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "core.adapters.hexstrike.requests.get",
         lambda *args, **kwargs: _FakeResp({"status": "healthy"}),
@@ -426,9 +420,5 @@ def test_cancellable_gobuster_rejects_unstructured_asset_arguments(
     )
 
     assert result.completed is False
-    errors = [
-        event.text
-        for event in _events(tmp_path)
-        if event.type is TraceEventType.ERROR
-    ]
+    errors = [event.text for event in _events(tmp_path) if event.type is TraceEventType.ERROR]
     assert any("unsupported gobuster asset arguments" in text for text in errors)

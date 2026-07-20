@@ -252,9 +252,7 @@ class HexStrikeAdapter(AgentAdapter):
         completed = resp_status == 200 and (success is True or return_code == 0 or hits > 0)
         return completed, f"success={success} rc={return_code} findings={hits}"
 
-    def _run_cancellable_job(
-        self, tool: str, params: dict, ctx: RunContext
-    ) -> tuple[int, dict]:
+    def _run_cancellable_job(self, tool: str, params: dict, ctx: RunContext) -> tuple[int, dict]:
         """Run a tool through the scoped job API and cancel it when KILL appears."""
         if not ctx.job_create_token:
             raise HexStrikeError("job creation capability is required")
