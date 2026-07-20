@@ -17,13 +17,23 @@ spending tokens.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from core.adapters.base import AgentAdapter, RunContext
+from core.budget import Budget, Usage
 from core.schemas.models import AgentResult, TaskSpec, TraceEventType
+
+
+@dataclass
+class LLMResponse:
+    text: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
 
 
 @dataclass
@@ -86,20 +96,26 @@ Any tool/command/flag/target you include will be ignored. Only asset_id and
 profile_id are read."""
 
 
-def _anthropic_llm(model: str) -> Callable[[str, str], str]:
+def _anthropic_llm(model: str) -> Callable[[str, str], LLMResponse]:
     """Real LLM call. Reads ANTHROPIC_API_KEY from the environment (never hard-coded)."""
     import anthropic
 
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
-    def call(system: str, user: str) -> str:
+    def call(system: str, user: str) -> LLMResponse:
         resp = client.messages.create(
             model=model,
             max_tokens=1024,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
-        return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+        text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+        input_tokens = int(getattr(resp.usage, "input_tokens", 0))
+        output_tokens = int(getattr(resp.usage, "output_tokens", 0))
+        input_rate = float(os.getenv("CLAUDE_INPUT_COST_PER_MILLION_USD", "0"))
+        output_rate = float(os.getenv("CLAUDE_OUTPUT_COST_PER_MILLION_USD", "0"))
+        cost_usd = (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000
+        return LLMResponse(text, input_tokens, output_tokens, cost_usd)
 
     return call
 
@@ -112,10 +128,12 @@ class ClaudeAdapter(AgentAdapter):
         catalog,
         assets,
         model: str = "claude-sonnet-4-6",
-        llm_fn: Callable[[str, str], str] | None = None,
+        llm_fn: Callable[[str, str], str | LLMResponse] | None = None,
         executor=None,
         policy=None,
-        max_steps: int = 6,
+        max_tokens_total: int = 20_000,
+        max_cost_usd: float | None = None,
+        hard_max_iterations: int = 50,
     ):
         self.catalog = catalog
         self.assets = assets
@@ -123,17 +141,40 @@ class ClaudeAdapter(AgentAdapter):
         self.llm_fn = llm_fn or _anthropic_llm(model)
         self.executor = executor  # e.g. HexStrikeAdapter; None = decide-only (stage 1)
         self.policy = policy
-        self.max_steps = max_steps
+        if max_cost_usd is not None and llm_fn is None:
+            pricing_vars = (
+                "CLAUDE_INPUT_COST_PER_MILLION_USD",
+                "CLAUDE_OUTPUT_COST_PER_MILLION_USD",
+            )
+            if any(not os.getenv(name) for name in pricing_vars):
+                raise ValueError(
+                    "cost budget requires CLAUDE_INPUT_COST_PER_MILLION_USD and "
+                    "CLAUDE_OUTPUT_COST_PER_MILLION_USD"
+                )
+        if max_tokens_total <= 0 or hard_max_iterations <= 0:
+            raise ValueError("token and iteration budgets must be positive")
+        self.max_tokens_total = max_tokens_total
+        self.max_cost_usd = max_cost_usd
+        self.hard_max_iterations = hard_max_iterations
 
-    def _ask(self, system: str, user: str, ctx: RunContext) -> Proposal:
+    def _ask(self, system: str, user: str, ctx: RunContext) -> tuple[Proposal, Usage]:
         raw = self.llm_fn(system, user)
-        prop = _safe_parse(raw)
+        if isinstance(raw, str):
+            response = LLMResponse(
+                text=raw,
+                input_tokens=max(1, math.ceil((len(system) + len(user)) / 4)),
+                output_tokens=max(1, math.ceil(len(raw) / 4)),
+            )
+        else:
+            response = raw
+        prop = _safe_parse(response.text)
         ctx.trace.emit(TraceEventType.PLAN, text=prop.reasoning[:500])
-        return prop
+        usage = Usage(response.input_tokens, response.output_tokens, response.cost_usd)
+        return prop, usage
 
     def run(self, task: TaskSpec, ctx: RunContext) -> AgentResult:
         """Autonomous loop: Claude proposes a profile, the harness gates+executes it,
-        the result is fed back, Claude decides the next step — up to max_steps.
+        the redacted result is fed back until done or a token/cost budget is exhausted.
 
         The ONLY thing Claude controls is which profile_id to propose. Every proposal
         is whitelist-checked and policy-gated by execute_profile before anything runs;
@@ -147,14 +188,47 @@ class ClaudeAdapter(AgentAdapter):
         history: list[str] = []
         executed_profiles: set[str] = set()  # loop guard: profiles already run
         completed = False
+        budget = Budget(
+            max_tokens=self.max_tokens_total,
+            max_cost_usd=self.max_cost_usd,
+            hard_max_iterations=self.hard_max_iterations,
+        )
 
-        for _step in range(self.max_steps):
+        while True:
+            exhausted = budget.exhausted_reason()
+            if exhausted:
+                ctx.trace.emit(
+                    TraceEventType.BUDGET,
+                    rule="budget_exhausted",
+                    verdict="deny",
+                    text=exhausted,
+                    tokens=budget.tokens_used,
+                    cost_usd=budget.cost_usd,
+                )
+                break
             convo = f"Task: {task.task}\n\n{menu}\n"
             if history:
                 convo += "\nResults so far:\n" + "\n".join(history)
             convo += "\nChoose the next profile+asset, or set done=true if finished."
 
-            prop = self._ask(_SYSTEM, convo, ctx)
+            prop, usage = self._ask(_SYSTEM, convo, ctx)
+            budget.record(usage)
+            ctx.trace.emit(
+                TraceEventType.COST,
+                tokens=budget.tokens_used,
+                cost_usd=budget.cost_usd,
+            )
+            exhausted = budget.exhausted_reason()
+            if exhausted:
+                ctx.trace.emit(
+                    TraceEventType.BUDGET,
+                    rule="budget_exhausted",
+                    verdict="deny",
+                    text=exhausted,
+                    tokens=budget.tokens_used,
+                    cost_usd=budget.cost_usd,
+                )
+                break
             if prop.done:
                 completed = True
                 break
@@ -196,7 +270,7 @@ class ClaudeAdapter(AgentAdapter):
             )
             if step_res.admitted:
                 claimed.append(f"executed '{prop.profile_id}'")
-                out = step_res.output[:400] or "(no output)"
+                out = ctx.redact(step_res.output[:400]) or "(no output)"
                 history.append(f"[{prop.profile_id}] executed. result: {out}")
                 # loop guard: if the same profile has already run, don't repeat it —
                 # tell the model it's done to prevent an infinite retry loop when a

@@ -23,6 +23,7 @@ import yaml
 
 from core.adapters.base import AgentAdapter, RunContext
 from core.policy import Policy
+from core.redaction import Redactor
 from core.schemas.models import SCHEMA_VERSION, AgentResult, TaskSpec, TraceEventType
 from core.trace.writer import TraceWriter
 
@@ -94,8 +95,15 @@ class Controller:
         run_dir = self.runs_root / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        trace = TraceWriter(run_id, run_dir / "trace.jsonl")
-        ctx = RunContext(run_id=run_id, run_dir=run_dir, trace=trace, seed=seed)
+        redactor = Redactor.from_assets(self.assets)
+        trace = TraceWriter(run_id, run_dir / "trace.jsonl", redactor=redactor)
+        ctx = RunContext(
+            run_id=run_id,
+            run_dir=run_dir,
+            trace=trace,
+            seed=seed,
+            redactor=redactor,
+        )
 
         # manifest FIRST — so even if the agent crashes, the run is identifiable
         manifest = {
@@ -103,7 +111,7 @@ class Controller:
             "created_utc": datetime.now(timezone.utc).isoformat(),
             "agent": agent.name,
             "case_id": case.id,
-            "case_path": str(case_path),
+            "case_path": Path(case_path).name,
             "case_hash": _case_hash(case_path),
             "schema_version": SCHEMA_VERSION,
             "seed": seed,
@@ -183,7 +191,8 @@ class Controller:
                     "claimed_actions": [],
                     "final_output_head": "",
                 }
-                (run_dir / "result.json").write_text(json.dumps(result_doc, indent=2))
+                safe_result_doc = redactor.value(result_doc)
+                (run_dir / "result.json").write_text(json.dumps(safe_result_doc, indent=2))
                 return run_dir
 
         execution_case = case
@@ -210,10 +219,11 @@ class Controller:
         from core.verifier import Verifier, load_env_evidence, load_trace
 
         events = load_trace(run_dir)
-        env_evidence = load_env_evidence(run_dir)  # independent, agent-tamper-proof
+        env_evidence = redactor.value(load_env_evidence(run_dir))
+        safe_claims = redactor.value(result.claimed_actions)
         evidence_required = resolved["profile"].evidence_required if resolved else []
         report = Verifier().verify(
-            result.claimed_actions, events, evidence_required, env_evidence=env_evidence
+            safe_claims, events, evidence_required, env_evidence=env_evidence
         )
         for cv in report.claim_verdicts:
             ctx.trace.emit(
@@ -237,11 +247,12 @@ class Controller:
             "agent_reported_completed": result.completed,
             "elapsed_s": elapsed,
             "task_id": result.task_id,
-            "tool_calls": [tc.model_dump() for tc in result.tool_calls],
-            "claimed_actions": result.claimed_actions,
-            "final_output_head": result.final_output[:500],
+            "tool_calls": redactor.value([tc.model_dump() for tc in result.tool_calls]),
+            "claimed_actions": safe_claims,
+            "final_output_head": redactor.text(result.final_output[:500]),
             "verification": report.to_dict(),
         }
-        (run_dir / "result.json").write_text(json.dumps(result_doc, indent=2))
+        safe_result_doc = redactor.value(result_doc)
+        (run_dir / "result.json").write_text(json.dumps(safe_result_doc, indent=2))
 
         return run_dir

@@ -14,12 +14,14 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from core.redaction import Redactor
 from core.schemas.models import TraceEvent, TraceEventType
 
 
 class TraceWriter:
-    def __init__(self, run_id: str, path: Path):
+    def __init__(self, run_id: str, path: Path, redactor: Redactor | None = None):
         self.run_id = run_id
+        self.redactor = redactor or Redactor()
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._seq = 0
@@ -32,12 +34,13 @@ class TraceWriter:
         """
         seq = self._seq
         self._seq += 1
+        safe_fields = self.redactor.value(fields)
         event = TraceEvent(
             ts=time.time(),
             run_id=self.run_id,
             seq=seq,
             type=type,
-            **fields,
+            **safe_fields,
         )
         # exclude_none keeps each line sparse — only the fields that event type uses
         with self.path.open("a", encoding="utf-8") as f:

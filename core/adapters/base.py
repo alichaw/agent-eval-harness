@@ -8,9 +8,10 @@ outside core/adapters/ is a design smell that means the abstraction is leaking.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from core.redaction import Redactor
 from core.schemas.models import AgentResult, TaskSpec
 from core.trace.writer import TraceWriter
 
@@ -25,6 +26,10 @@ class RunContext:
     run_dir: Path
     trace: TraceWriter
     seed: int = 0
+    redactor: Redactor = field(default_factory=Redactor)
+
+    def redact(self, value):
+        return self.redactor.value(value)
 
 
 class AgentAdapter(ABC):
