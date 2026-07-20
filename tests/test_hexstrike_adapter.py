@@ -257,6 +257,7 @@ def test_cancellable_nmap_job_completes_normally(tmp_path, monkeypatch):
         if url.endswith("/api/cache/clear"):
             return _FakeResp({})
         assert kwargs["headers"]["X-Job-Create-Token"] == "create-secret"
+        assert kwargs["json"]["ports"] == ""
         return _FakeResp(
             {"job_id": "opaque-job", "job_token": "secret-capability"},
             status=202,
@@ -268,7 +269,9 @@ def test_cancellable_nmap_job_completes_normally(tmp_path, monkeypatch):
     ctx.kill_switch = KillSwitch(tmp_path / "KILL")
     ctx.job_create_token = "create-secret"
 
-    result = HexStrikeAdapter().run(_task(), ctx)
+    result = HexStrikeAdapter().run(
+        _task(scan_type="-sn", ports="22,80,443"), ctx
+    )
 
     assert result.completed is True
     assert "secret-capability" not in (tmp_path / "trace.jsonl").read_text()
