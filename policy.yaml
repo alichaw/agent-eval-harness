@@ -53,7 +53,7 @@ active_tools:
 allowed_targets:
   - juiceshop
   - t1-target
-  - 192.168.56.10/32
+  - 192.0.2.10/32
   # - 10.20.0.0/24         # authorised test VLAN        (example — replace)
   # - 10.20.1.0/24         # authorised endpoint segment (example — replace)
 
