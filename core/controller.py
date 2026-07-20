@@ -289,10 +289,12 @@ class Controller:
         result: AgentResult = agent.run(execution_case, ctx)
         elapsed = round(time.time() - started, 3)
         if resolved is not None:
-            if self.kill_switch is not None and self.kill_switch.engaged():
+            if result.completed:
+                final_state = ExecutionState.VERIFIED
+            elif self.kill_switch is not None and self.kill_switch.engaged():
                 final_state = ExecutionState.KILLED
             else:
-                final_state = ExecutionState.VERIFIED if result.completed else ExecutionState.FAILED
+                final_state = ExecutionState.FAILED
             ctx.trace.emit(
                 TraceEventType.EXECUTION_STATE,
                 state=final_state.value,
