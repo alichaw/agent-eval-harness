@@ -186,6 +186,19 @@ def test_kill_switch_cancels_active_nmap_job(tmp_path, monkeypatch):
     def fake_get(url, **kwargs):
         if url.endswith("/health"):
             return _FakeResp({"status": "healthy"})
+        if cancelled:
+            return _FakeResp(
+                {
+                    "status": "cancelled",
+                    "result": {
+                        "success": False,
+                        "return_code": -15,
+                        "stdout": "",
+                        "stderr": "terminated",
+                        "cancelled": True,
+                    },
+                }
+            )
         return _FakeResp({"status": "running"})
 
     def fake_post(url, **kwargs):
@@ -216,6 +229,7 @@ def test_kill_switch_cancels_active_nmap_job(tmp_path, monkeypatch):
     ]
 
     assert result.completed is False
+    assert result.claimed_actions == []
     assert cancelled == [
         ("http://127.0.0.1:8888/api/jobs/opaque-job", "secret-capability")
     ]
