@@ -1,0 +1,19 @@
+# assets.yaml — asset_id -> real target. The model only names an asset;
+# it never sets the real target/IP. (Signed scope registry is stage-2.)
+assets:
+  "asset:web-lab-01":
+    asset_type: web_lab
+    target: juiceshop
+    ports: "3000"
+    tool_args:
+      additional_args: "--exclude-length 9903"
+
+  "asset:vm-lab-01":
+    asset_type: host
+    target: 192.0.2.10
+    ports: "22,80,443"
+
+  "asset:t1-container":
+    asset_type: host
+    target: t1-target
+    ports: "8000"
