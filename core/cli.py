@@ -31,10 +31,16 @@ def _read_token_file(path: str | None) -> str:
     if not path:
         return ""
     token_path = Path(path)
-    mode = stat.S_IMODE(token_path.stat().st_mode)
+    try:
+        mode = stat.S_IMODE(token_path.stat().st_mode)
+        token = token_path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError as exc:
+        raise SystemExit(f"approval token file not found: {token_path}") from exc
     if mode & 0o077:
         raise SystemExit("approval token file must have mode 0600")
-    return token_path.read_text(encoding="utf-8").strip()
+    if not token:
+        raise SystemExit("approval token file is empty")
+    return token
 
 
 def _make_agent(
