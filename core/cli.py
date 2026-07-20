@@ -10,10 +10,37 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 
 from core.controller import Controller
+
+
+def _approval_authority(spent_dir: str | Path):
+    from core.safety import ApprovalAuthority
+
+    secret = os.environ.get("HARNESS_APPROVAL_SECRET", "")
+    if not secret:
+        return None
+    return ApprovalAuthority(secret.encode(), spent_dir)
+
+
+def _read_token_file(path: str | None) -> str:
+    if not path:
+        return ""
+    token_path = Path(path)
+    try:
+        mode = stat.S_IMODE(token_path.stat().st_mode)
+        token = token_path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError as exc:
+        raise SystemExit(f"approval token file not found: {token_path}") from exc
+    if mode & 0o077:
+        raise SystemExit("approval token file must have mode 0600")
+    if not token:
+        raise SystemExit("approval token file is empty")
+    return token
 
 
 def _make_agent(
@@ -78,11 +105,21 @@ def cmd_run(args) -> int:
         max_cost_usd=args.max_cost_usd,
     )
 
+    from core.safety import KillSwitch
+
+    authority = _approval_authority(args.approval_spent_dir)
+    token = _read_token_file(args.approval_token_file)
+    if token and authority is None:
+        raise SystemExit("HARNESS_APPROVAL_SECRET is required with an approval token")
+
     controller = Controller(
         runs_root=args.runs_root,
         policy=policy,
         catalog=catalog,
         assets=assets,
+        approval_token=token,
+        approval_authority=authority,
+        kill_switch=KillSwitch(Path(args.kill_switch_file)),
     )
     run_dir = controller.run_case(args.case, agent)
 
@@ -102,6 +139,38 @@ def cmd_run(args) -> int:
     print("artifacts: manifest.json  trace.jsonl  result.json")
 
     return 0 if result["completed"] else 1
+
+
+def cmd_approve(args) -> int:
+    """Issue a short-lived approval without printing the token."""
+    from core.profiles import AssetRegistry, ProfileCatalog
+    from core.safety import profile_fingerprint
+
+    authority = _approval_authority(args.approval_spent_dir)
+    if authority is None:
+        raise SystemExit("HARNESS_APPROVAL_SECRET is required")
+
+    catalog = ProfileCatalog.from_yaml(args.profiles)
+    assets = AssetRegistry.from_yaml(args.assets)
+    profile = catalog.get(args.profile_id)
+    assets.resolve(args.asset_id)
+    if not profile.approval_required:
+        raise SystemExit("profile does not require approval")
+
+    token = authority.issue(
+        args.asset_id,
+        args.profile_id,
+        profile_fingerprint(profile),
+        ttl_seconds=args.ttl_seconds,
+    )
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(output, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(token + "\n")
+    print(f"approval written: {output}")
+    print(f"expires in      : {args.ttl_seconds}s")
+    return 0
 
 
 def cmd_replay(args) -> int:
@@ -146,7 +215,32 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="maximum cumulative LLM cost; defaults to policy max_cost_usd",
     )
+    p_run.add_argument(
+        "--approval-token-file",
+        default=None,
+        help="0600 file containing a single-use approval token",
+    )
+    p_run.add_argument(
+        "--approval-spent-dir",
+        default="config/local/approval-spent",
+        help="local directory for consumed-token markers",
+    )
+    p_run.add_argument(
+        "--kill-switch-file",
+        default="config/local/KILL",
+        help="execution stops when this file exists",
+    )
     p_run.set_defaults(func=cmd_run)
+
+    p_approve = sub.add_parser("approve", help="issue a short-lived single-use approval")
+    p_approve.add_argument("--profiles", required=True)
+    p_approve.add_argument("--assets", required=True)
+    p_approve.add_argument("--asset-id", required=True)
+    p_approve.add_argument("--profile-id", required=True)
+    p_approve.add_argument("--ttl-seconds", type=int, default=300)
+    p_approve.add_argument("--output", required=True)
+    p_approve.add_argument("--approval-spent-dir", default="config/local/approval-spent")
+    p_approve.set_defaults(func=cmd_approve)
 
     p_replay = sub.add_parser("replay", help="recompute a run's verdict from its trace")
     p_replay.add_argument("run_dir", help="path to runs/<run_id>")
