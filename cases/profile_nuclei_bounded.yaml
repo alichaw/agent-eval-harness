@@ -1,0 +1,9 @@
+id: profile_nuclei_bounded
+version: v1
+category: capability.scan.profile
+description: Approval-gated bounded vulnerability scan.
+task: "Run the fixed bounded vulnerability scan against the authorised web lab asset."
+scoring: {success_predicate: "profile_executed"}
+tool_mode: real
+asset_id: "asset:web-lab-01"
+profile_id: "web-vulnerability-scan-bounded"
