@@ -24,6 +24,7 @@ import yaml
 from core.adapters.base import AgentAdapter, RunContext
 from core.policy import Policy
 from core.redaction import Redactor
+from core.safety import ApprovalAuthority, ApprovalError, ExecutionState, KillSwitch, profile_fingerprint
 from core.schemas.models import SCHEMA_VERSION, AgentResult, TaskSpec, TraceEventType
 from core.trace.writer import TraceWriter
 
@@ -54,11 +55,17 @@ class Controller:
         policy: Policy | None = None,
         catalog=None,
         assets=None,
+        approval_token: str = "",
+        approval_authority: ApprovalAuthority | None = None,
+        kill_switch: KillSwitch | None = None,
     ):
         self.runs_root = Path(runs_root)
         self.policy = policy
         self.catalog = catalog  # ProfileCatalog | None (enables profile-driven mode)
         self.assets = assets  # AssetRegistry | None
+        self.approval_token = approval_token
+        self.approval_authority = approval_authority
+        self.kill_switch = kill_switch
 
     def _resolve_profile(self, case):
         """If the case is profile-driven ({asset_id, profile_id}), resolve it into a
@@ -103,6 +110,9 @@ class Controller:
             trace=trace,
             seed=seed,
             redactor=redactor,
+            approval_token=self.approval_token,
+            approval_authority=self.approval_authority,
+            kill_switch=self.kill_switch,
         )
 
         # manifest FIRST — so even if the agent crashes, the run is identifiable
@@ -126,6 +136,37 @@ class Controller:
         # resolve a profile-driven case into concrete (tool, target, params) — the
         # model only named {asset_id, profile_id}; the Harness derives the rest.
         resolved = self._resolve_profile(case)  # None for legacy cases
+        if resolved is not None:
+            ctx.trace.emit(
+                TraceEventType.EXECUTION_STATE,
+                state=ExecutionState.PROPOSED.value,
+                text=f"{case.asset_id} / {case.profile_id}",
+            )
+
+        if self.kill_switch is not None and self.kill_switch.engaged():
+            ctx.trace.emit(
+                TraceEventType.EXECUTION_STATE,
+                state=ExecutionState.KILLED.value,
+                text="kill switch engaged before policy gate",
+            )
+            result_doc = {
+                "run_id": run_id,
+                "completed": False,
+                "agent_reported_completed": False,
+                "elapsed_s": 0.0,
+                "task_id": case.id,
+                "policy_denied": True,
+                "policy_verdict": "deny",
+                "policy_rule": "kill_switch_engaged",
+                "policy_detail": "kill switch engaged before policy gate",
+                "tool_calls": [],
+                "claimed_actions": [],
+                "final_output_head": "",
+            }
+            (run_dir / "result.json").write_text(
+                json.dumps(redactor.value(result_doc), indent=2)
+            )
+            return run_dir
 
         if self.policy is not None:
             from core.policy import ActionRequest, Verdict
@@ -160,6 +201,30 @@ class Controller:
                         "profile_needs_approval",
                         f"profile '{case.profile_id}' (risk={resolved['profile'].risk_tier.value})",
                     )
+                if decision.verdict is Verdict.REQUIRE_APPROVAL:
+                    if self.approval_authority is not None and self.approval_token:
+                        try:
+                            self.approval_authority.verify_and_consume(
+                                self.approval_token,
+                                case.asset_id,
+                                case.profile_id,
+                                profile_fingerprint(resolved["profile"]),
+                            )
+                        except ApprovalError as exc:
+                            decision = PolicyDecision(
+                                Verdict.DENY, "approval_invalid", str(exc)
+                            )
+                        else:
+                            ctx.trace.emit(
+                                TraceEventType.EXECUTION_STATE,
+                                state=ExecutionState.APPROVED.value,
+                                text="single-use approval consumed",
+                            )
+                            decision = PolicyDecision(
+                                Verdict.ALLOW,
+                                "approval_valid",
+                                "single-use approval consumed",
+                            )
             else:
                 tool = case.allowed_tools[0] if case.allowed_tools else ""
                 requested_tool = case.agent_params.get("tool", tool)
@@ -209,9 +274,22 @@ class Controller:
                 }
             )
 
+        if resolved is not None:
+            ctx.trace.emit(
+                TraceEventType.EXECUTION_STATE,
+                state=ExecutionState.RUNNING.value,
+                text=ExecutionState.RUNNING.value,
+            )
         started = time.time()
         result: AgentResult = agent.run(execution_case, ctx)
         elapsed = round(time.time() - started, 3)
+        if resolved is not None:
+            final_state = ExecutionState.VERIFIED if result.completed else ExecutionState.FAILED
+            ctx.trace.emit(
+                TraceEventType.EXECUTION_STATE,
+                state=final_state.value,
+                text=final_state.value,
+            )
 
         # ACTION VERIFIER (W4): don't trust the agent's self-report. Cross-check its
         # claimed_actions against the trace evidence, and against the profile's
