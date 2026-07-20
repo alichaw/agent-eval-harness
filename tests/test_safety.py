@@ -76,9 +76,7 @@ def test_approval_rejects_wrong_asset_and_tampering(tmp_path):
     replacement = "A" if signature[0] != "A" else "B"
     tampered = f"{payload}.{replacement}{signature[1:]}"
     with pytest.raises(ApprovalError, match="signature"):
-        authority.verify_and_consume(
-            tampered, "asset:test", profile.profile_id, fingerprint
-        )
+        authority.verify_and_consume(tampered, "asset:test", profile.profile_id, fingerprint)
 
 
 def test_expired_approval_is_rejected(tmp_path, monkeypatch):
