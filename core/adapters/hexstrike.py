@@ -137,8 +137,7 @@ class HexStrikeAdapter(AgentAdapter):
             "target_field": "target",
             "judge_kind": "web",
             "body": lambda tgt, p: {
-                "severity": p.get("severity", "info,low,medium"),
-                "tags": p.get("tags", "tech,misconfig,exposure"),
+                "template_set": p.get("template_set", "baseline-web-v1"),
                 "rate_limit": p.get("rate_limit", 5),
                 "concurrency": p.get("concurrency", 1),
                 "timeout": p.get("timeout", 5),
