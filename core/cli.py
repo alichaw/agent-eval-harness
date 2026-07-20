@@ -16,7 +16,14 @@ from pathlib import Path
 from core.controller import Controller
 
 
-def _make_agent(name: str, catalog=None, assets=None, policy=None):
+def _make_agent(
+    name: str,
+    catalog=None,
+    assets=None,
+    policy=None,
+    max_tokens_total: int = 20_000,
+    max_cost_usd: float | None = None,
+):
     """Instantiate an adapter by name. Add new agents here — the ONLY place the CLI
     needs to know concrete adapters; everything else uses the base contract."""
     if name == "mock":
@@ -33,7 +40,17 @@ def _make_agent(name: str, catalog=None, assets=None, policy=None):
 
         if catalog is None or assets is None:
             raise SystemExit("--agent claude requires --profiles and --assets")
-        return ClaudeAdapter(catalog, assets, executor=HexStrikeAdapter(), policy=policy)
+        cost_limit = max_cost_usd
+        if cost_limit is None and policy is not None:
+            cost_limit = policy.max_cost_usd
+        return ClaudeAdapter(
+            catalog,
+            assets,
+            executor=HexStrikeAdapter(),
+            policy=policy,
+            max_tokens_total=max_tokens_total,
+            max_cost_usd=cost_limit,
+        )
     raise SystemExit(f"unknown agent '{name}' (choices: mock, hexstrike, claude)")
 
 
@@ -57,6 +74,8 @@ def cmd_run(args) -> int:
         catalog=catalog,
         assets=assets,
         policy=policy,
+        max_tokens_total=args.max_tokens_total,
+        max_cost_usd=args.max_cost_usd,
     )
 
     controller = Controller(
@@ -115,6 +134,18 @@ def main(argv: list[str] | None = None) -> int:
         "--profiles", default=None, help="path to profiles.yaml (profile-driven mode)"
     )
     p_run.add_argument("--assets", default=None, help="path to assets.yaml (asset_id resolver)")
+    p_run.add_argument(
+        "--max-tokens-total",
+        type=int,
+        default=20_000,
+        help="maximum cumulative LLM input+output tokens",
+    )
+    p_run.add_argument(
+        "--max-cost-usd",
+        type=float,
+        default=None,
+        help="maximum cumulative LLM cost; defaults to policy max_cost_usd",
+    )
     p_run.set_defaults(func=cmd_run)
 
     p_replay = sub.add_parser("replay", help="recompute a run's verdict from its trace")
