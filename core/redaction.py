@@ -24,7 +24,7 @@ class Redactor:
         self._ip_aliases: dict[str, str] = {}
 
     @classmethod
-    def from_assets(cls, assets) -> "Redactor":
+    def from_assets(cls, assets) -> Redactor:
         aliases: dict[str, str] = {}
         if assets is not None:
             for asset_id, asset in assets._assets.items():
