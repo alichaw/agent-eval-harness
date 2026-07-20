@@ -433,10 +433,10 @@ def test_cancellable_nuclei_job_uses_only_bounded_structured_fields(tmp_path, mo
             {
                 "status": "succeeded",
                 "result": {
-                    "success": True,
-                    "return_code": 0,
+                    "success": False,
+                    "return_code": 1,
                     "stdout": "",
-                    "stderr": "",
+                    "stderr": "template configuration unavailable",
                 },
             }
         )
@@ -477,7 +477,8 @@ def test_cancellable_nuclei_job_uses_only_bounded_structured_fields(tmp_path, mo
         ctx,
     )
 
-    assert result.completed is True
+    assert result.completed is False
+    assert result.final_output == "template configuration unavailable"
     trace_text = (tmp_path / "trace.jsonl").read_text()
     assert "create-secret" not in trace_text
     assert "secret-capability" not in trace_text
