@@ -109,9 +109,7 @@ def cmd_run(args) -> int:
 
     authority = _approval_authority(args.approval_spent_dir)
     token = _read_token_file(args.approval_token_file)
-    job_create_token = _read_token_file(
-        args.job_create_token_file, "job create token"
-    )
+    job_create_token = _read_token_file(args.job_create_token_file, "job create token")
     if token and authority is None:
         raise SystemExit("HARNESS_APPROVAL_SECRET is required with an approval token")
 

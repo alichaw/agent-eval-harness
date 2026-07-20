@@ -292,11 +292,7 @@ def test_cancellable_job_requires_create_capability(tmp_path, monkeypatch):
     result = HexStrikeAdapter().run(_task(), ctx)
 
     assert result.completed is False
-    errors = [
-        event
-        for event in _events(tmp_path)
-        if event.type is TraceEventType.ERROR
-    ]
+    errors = [event for event in _events(tmp_path) if event.type is TraceEventType.ERROR]
     assert errors
     assert "creation capability is required" in errors[-1].text
 
