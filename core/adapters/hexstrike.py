@@ -164,13 +164,6 @@ class HexStrikeAdapter(AgentAdapter):
             "body": lambda tgt, p: {"additional_args": p.get("additional_args", "")},
             "claim": lambda tgt, p: f"host-discovered {tgt} (arp)",
         },
-        "fping": {
-            "target_style": "raw",
-            "target_field": "target",
-            "judge_kind": "discovery",
-            "body": lambda tgt, p: {"additional_args": p.get("additional_args", "-a -g")},
-            "claim": lambda tgt, p: f"host-discovered {tgt} (ping sweep)",
-        },
         "nc": {
             "target_style": "raw",
             "target_field": "target",
