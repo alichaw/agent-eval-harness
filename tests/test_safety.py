@@ -72,9 +72,12 @@ def test_approval_rejects_wrong_asset_and_tampering(tmp_path):
     with pytest.raises(ApprovalError, match="does not match"):
         authority.verify_and_consume(token, "asset:other", profile.profile_id, fingerprint)
 
+    payload, signature = token.split(".", 1)
+    replacement = "A" if signature[0] != "A" else "B"
+    tampered = f"{payload}.{replacement}{signature[1:]}"
     with pytest.raises(ApprovalError, match="signature"):
         authority.verify_and_consume(
-            token[:-1] + "A", "asset:test", profile.profile_id, fingerprint
+            tampered, "asset:test", profile.profile_id, fingerprint
         )
 
 
