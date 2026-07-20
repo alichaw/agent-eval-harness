@@ -64,6 +64,7 @@ def gate(
         default=policy.default,
         allowed_tools=policy.allowed_tools,
         allowed_targets=policy.allowed_targets,
+        denied_targets=policy.denied_targets,
         active_tools=[],
         max_cost_usd=policy.max_cost_usd,
         deny_flags=policy.deny_flags,
