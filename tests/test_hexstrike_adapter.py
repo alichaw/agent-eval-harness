@@ -82,6 +82,7 @@ def _patch_nmap(monkeypatch, stdout, return_code=0, status=200):
     def fake_post(url, **kwargs):
         if url.endswith("/api/cache/clear"):
             return _FakeResp({})
+        assert kwargs["headers"]["X-Job-Create-Token"] == "create-secret"
         return _FakeResp(
             {"return_code": return_code, "stdout": stdout, "execution_time": 1.2}, status=status
         )
@@ -205,6 +206,7 @@ def test_kill_switch_cancels_active_nmap_job(tmp_path, monkeypatch):
         if url.endswith("/api/cache/clear"):
             return _FakeResp({})
         if url.endswith("/api/jobs/nmap"):
+            assert kwargs["headers"]["X-Job-Create-Token"] == "create-secret"
             return _FakeResp(
                 {"job_id": "opaque-job", "job_token": "secret-capability"},
                 status=202,
@@ -220,6 +222,7 @@ def test_kill_switch_cancels_active_nmap_job(tmp_path, monkeypatch):
     monkeypatch.setattr("core.adapters.hexstrike.requests.delete", fake_delete)
     ctx = _ctx(tmp_path)
     ctx.kill_switch = KillSwitch(kill_file)
+    ctx.job_create_token = "create-secret"
 
     result = HexStrikeAdapter().run(_task(), ctx)
     states = [
@@ -263,8 +266,33 @@ def test_cancellable_nmap_job_completes_normally(tmp_path, monkeypatch):
     monkeypatch.setattr("core.adapters.hexstrike.requests.post", fake_post)
     ctx = _ctx(tmp_path)
     ctx.kill_switch = KillSwitch(tmp_path / "KILL")
+    ctx.job_create_token = "create-secret"
 
     result = HexStrikeAdapter().run(_task(), ctx)
 
     assert result.completed is True
     assert "secret-capability" not in (tmp_path / "trace.jsonl").read_text()
+
+
+def test_cancellable_job_requires_create_capability(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "core.adapters.hexstrike.requests.get",
+        lambda *args, **kwargs: _FakeResp({"status": "healthy"}),
+    )
+    monkeypatch.setattr(
+        "core.adapters.hexstrike.requests.post",
+        lambda *args, **kwargs: _FakeResp({}),
+    )
+    ctx = _ctx(tmp_path)
+    ctx.kill_switch = KillSwitch(tmp_path / "KILL")
+
+    result = HexStrikeAdapter().run(_task(), ctx)
+
+    assert result.completed is False
+    errors = [
+        event
+        for event in _events(tmp_path)
+        if event.type is TraceEventType.ERROR
+    ]
+    assert errors
+    assert "creation capability is required" in errors[-1].text
