@@ -167,3 +167,32 @@ profiles:
     evidence_required:
       - tool_invocation_log
       - target_access_log
+
+  # T2 bounded vulnerability scan — always requires a single-use approval.
+  # Raw flags, custom templates, Interactsh, intrusive/fuzz/DoS/headless tags,
+  # high/critical severity, and multi-target input are structurally unavailable.
+  web-vulnerability-scan-bounded:
+    description: Run a bounded Nuclei scan against one authorised web lab asset.
+    interaction_mode: active
+    risk_tier: medium
+    allowed_asset_types: [web_lab]
+    tool_id: nuclei
+    parameters:
+      severity: "info,low,medium"
+      tags: "tech,misconfig,exposure"
+      rate_limit: 5
+      concurrency: 1
+      timeout: 5
+    limits:
+      max_targets: 1
+      max_ports: 1
+      max_tool_calls: 1
+      max_duration_seconds: 180
+      max_requests_per_second: 5
+      max_retries: 0
+    internet_egress: false
+    approval_required: true
+    evidence_required:
+      - tool_invocation_log
+      - target_access_log
+      - network_flow_log
