@@ -10,6 +10,7 @@ from core.controller import Controller
 from core.executor import gate
 from core.policy import Policy, Verdict
 from core.profiles import AssetRegistry, ProfileCatalog, ProfileError
+from core.safety import ApprovalAuthority, ExecutionState, KillSwitch, profile_fingerprint
 from core.schemas.models import TraceEvent, TraceEventType
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -142,3 +143,65 @@ def test_httpx_t1_profile_uses_structured_parameters():
     assert "additional_args" not in params
     assert "raw_command" not in params
     assert "custom_flags" not in params
+
+
+def test_direct_profile_accepts_bound_single_use_approval(tmp_path):
+    catalog = _cat()
+    assets = _assets()
+    profile = catalog.get("tcp-service-inventory-low")
+    authority = ApprovalAuthority(b"a" * 32, tmp_path / "spent")
+    token = authority.issue(
+        "asset:web-lab-01",
+        profile.profile_id,
+        profile_fingerprint(profile),
+    )
+    controller = Controller(
+        runs_root=tmp_path / "runs",
+        policy=_policy(),
+        catalog=catalog,
+        assets=assets,
+        approval_token=token,
+        approval_authority=authority,
+    )
+
+    run_dir = controller.run_case(
+        ROOT / "cases" / "profile_tcp_inventory.yaml",
+        MockAgent(),
+    )
+    events = _trace_events(run_dir)
+    states = [
+        event.state
+        for event in events
+        if event.type is TraceEventType.EXECUTION_STATE
+    ]
+
+    assert ExecutionState.APPROVED.value in states
+    assert ExecutionState.RUNNING.value in states
+    assert any(event.type is TraceEventType.TOOL_CALL for event in events)
+
+
+def test_direct_profile_kill_switch_blocks_before_tool(tmp_path):
+    kill_file = tmp_path / "KILL"
+    kill_file.touch()
+    controller = Controller(
+        runs_root=tmp_path / "runs",
+        policy=_policy(),
+        catalog=_cat(),
+        assets=_assets(),
+        kill_switch=KillSwitch(kill_file),
+    )
+
+    run_dir = controller.run_case(
+        ROOT / "cases" / "profile_http_metadata.yaml",
+        MockAgent(),
+    )
+    result = json.loads((run_dir / "result.json").read_text())
+    events = _trace_events(run_dir)
+
+    assert result["policy_rule"] == "kill_switch_engaged"
+    assert not any(event.type is TraceEventType.TOOL_CALL for event in events)
+    assert any(
+        event.type is TraceEventType.EXECUTION_STATE
+        and event.state == ExecutionState.KILLED.value
+        for event in events
+    )
