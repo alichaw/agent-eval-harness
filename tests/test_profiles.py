@@ -200,3 +200,42 @@ def test_direct_profile_kill_switch_blocks_before_tool(tmp_path):
         event.type is TraceEventType.EXECUTION_STATE and event.state == ExecutionState.KILLED.value
         for event in events
     )
+
+
+def test_late_kill_switch_does_not_relabel_completed_adapter(tmp_path):
+    from core.schemas.models import AgentResult
+
+    class CompleteThenKill:
+        name = "complete_then_kill"
+
+        def run(self, task, ctx):
+            ctx.kill_switch.path.touch()
+            return AgentResult(
+                task_id=task.id,
+                completed=True,
+                tool_calls=[],
+                final_output="completed before switch",
+                claimed_actions=[],
+                raw_trace_path=str(ctx.trace.path),
+            )
+
+    kill_file = tmp_path / "KILL"
+    controller = Controller(
+        runs_root=tmp_path / "runs",
+        policy=_policy(),
+        catalog=_cat(),
+        assets=_assets(),
+        kill_switch=KillSwitch(kill_file),
+    )
+
+    run_dir = controller.run_case(
+        ROOT / "cases" / "profile_http_metadata.yaml",
+        CompleteThenKill(),
+    )
+    states = [
+        event.state
+        for event in _trace_events(run_dir)
+        if event.type is TraceEventType.EXECUTION_STATE
+    ]
+
+    assert states[-1] == ExecutionState.VERIFIED.value
