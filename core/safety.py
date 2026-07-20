@@ -18,6 +18,7 @@ class ExecutionState(str, Enum):
     PROPOSED = "proposed"
     APPROVED = "approved"
     RUNNING = "running"
+    CANCELLING = "cancelling"
     VERIFIED = "verified"
     BLOCKED = "blocked"
     FAILED = "failed"
