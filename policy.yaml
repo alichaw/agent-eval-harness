@@ -9,7 +9,6 @@ allowed_tools:
   # T1 · recon (low risk, autonomous)
   - nmap
   - arp-scan
-  - fping
   - netdiscover
   - traceroute
   - tcptraceroute
