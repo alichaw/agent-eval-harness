@@ -315,6 +315,7 @@ class HexStrikeAdapter(AgentAdapter):
 
         requests.delete(job_url, headers=headers, timeout=10)
         raise HexStrikeError("cancellable job timed out and was cancelled")
+
     # -- the contract ------------------------------------------------------
 
     def run(self, task: TaskSpec, ctx: RunContext) -> AgentResult:

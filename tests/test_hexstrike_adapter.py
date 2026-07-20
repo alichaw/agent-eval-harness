@@ -223,16 +223,12 @@ def test_kill_switch_cancels_active_nmap_job(tmp_path, monkeypatch):
 
     result = HexStrikeAdapter().run(_task(), ctx)
     states = [
-        event.state
-        for event in _events(tmp_path)
-        if event.type is TraceEventType.EXECUTION_STATE
+        event.state for event in _events(tmp_path) if event.type is TraceEventType.EXECUTION_STATE
     ]
 
     assert result.completed is False
     assert result.claimed_actions == []
-    assert cancelled == [
-        ("http://127.0.0.1:8888/api/jobs/opaque-job", "secret-capability")
-    ]
+    assert cancelled == [("http://127.0.0.1:8888/api/jobs/opaque-job", "secret-capability")]
     assert ExecutionState.CANCELLING.value in states
     assert ExecutionState.KILLED.value in states
     trace_text = (tmp_path / "trace.jsonl").read_text()
