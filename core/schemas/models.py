@@ -59,6 +59,7 @@ class TraceEventType(str, Enum):
     TIMEOUT = "timeout"
     COST = "cost"
     BUDGET = "budget"
+    EXECUTION_STATE = "execution_state"
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +124,7 @@ class TraceEvent(BaseModel):
     error_class: str | None = None  # ties to your error taxonomy (Part 5.4)
     cost_usd: float | None = None
     tokens: int | None = None
+    state: str | None = None
 
 
 # ---------------------------------------------------------------------------
