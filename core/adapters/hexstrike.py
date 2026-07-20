@@ -22,6 +22,7 @@ import time
 import requests
 
 from core.adapters.base import AgentAdapter, RunContext
+from core.safety import ExecutionState
 from core.schemas.models import (
     AgentResult,
     TaskSpec,
@@ -251,6 +252,70 @@ class HexStrikeAdapter(AgentAdapter):
         completed = resp_status == 200 and (success is True or return_code == 0 or hits > 0)
         return completed, f"success={success} rc={return_code} findings={hits}"
 
+    def _run_cancellable_nmap(self, params: dict, ctx: RunContext) -> tuple[int, dict]:
+        """Run nmap through the scoped job API and cancel it when KILL appears."""
+        create = requests.post(f"{self.base_url}/api/jobs/nmap", json=params, timeout=10)
+        if create.status_code != 202:
+            detail = create.json().get("error", "cancellable job API unavailable")
+            raise HexStrikeError(f"cancellable job rejected: {detail}")
+
+        created = create.json()
+        job_id = created.get("job_id", "")
+        job_token = created.get("job_token", "")
+        if not job_id or not job_token:
+            raise HexStrikeError("cancellable job response missing capability")
+        headers = {"X-Job-Token": job_token}
+        job_url = f"{self.base_url}/api/jobs/{job_id}"
+        deadline = time.monotonic() + self.timeout
+
+        while time.monotonic() < deadline:
+            if ctx.kill_switch is not None and ctx.kill_switch.engaged():
+                ctx.trace.emit(
+                    TraceEventType.EXECUTION_STATE,
+                    state=ExecutionState.CANCELLING.value,
+                    text="cancelling active HexStrike job",
+                )
+                cancel_response = requests.delete(job_url, headers=headers, timeout=10)
+                if cancel_response.status_code not in {200, 202}:
+                    raise HexStrikeError(
+                        f"job cancellation failed: HTTP {cancel_response.status_code}"
+                    )
+                cancel_deadline = time.monotonic() + 5
+                while time.monotonic() < cancel_deadline:
+                    confirmation = requests.get(job_url, headers=headers, timeout=10)
+                    if confirmation.status_code != 200:
+                        raise HexStrikeError(
+                            f"cancellation status failed: HTTP {confirmation.status_code}"
+                        )
+                    cancelled_job = confirmation.json()
+                    status = cancelled_job.get("status")
+                    if status == "cancelled":
+                        result = cancelled_job.get("result", {})
+                        result["cancelled"] = True
+                        ctx.trace.emit(
+                            TraceEventType.EXECUTION_STATE,
+                            state=ExecutionState.KILLED.value,
+                            text="active HexStrike job cancellation confirmed",
+                        )
+                        return confirmation.status_code, result
+                    if status in {"succeeded", "failed"}:
+                        raise HexStrikeError(
+                            "job reached a terminal state before cancellation confirmation"
+                        )
+                    time.sleep(0.1)
+                raise HexStrikeError("server did not confirm job cancellation")
+
+            response = requests.get(job_url, headers=headers, timeout=10)
+            if response.status_code != 200:
+                raise HexStrikeError(f"job status failed: HTTP {response.status_code}")
+            job = response.json()
+            if job.get("status") in {"succeeded", "failed", "cancelled"}:
+                return response.status_code, job.get("result", {})
+            time.sleep(0.25)
+
+        requests.delete(job_url, headers=headers, timeout=10)
+        raise HexStrikeError("cancellable job timed out and was cancelled")
+
     # -- the contract ------------------------------------------------------
 
     def run(self, task: TaskSpec, ctx: RunContext) -> AgentResult:
@@ -308,9 +373,13 @@ class HexStrikeAdapter(AgentAdapter):
             TraceEventType.TOOL_CALL, tool=tool, params=params, executed=True, mode=ToolMode.REAL
         )
         try:
-            resp = requests.post(endpoint, json=params, timeout=self.timeout)
-            data = resp.json()
-        except requests.RequestException as e:
+            if tool == "nmap" and ctx.kill_switch is not None:
+                status_code, data = self._run_cancellable_nmap(params, ctx)
+            else:
+                resp = requests.post(endpoint, json=params, timeout=self.timeout)
+                status_code = resp.status_code
+                data = resp.json()
+        except (requests.RequestException, HexStrikeError) as e:
             ctx.trace.emit(TraceEventType.ERROR, error_class="request_failed", text=str(e))
             return AgentResult(
                 task_id=task.id,
@@ -331,17 +400,22 @@ class HexStrikeAdapter(AgentAdapter):
                 raw_trace_path=str(ctx.trace.path),
             )
 
-        completed, judge_text = self._judge(tool, resp.status_code, data, params)
+        cancelled = bool(data.get("cancelled"))
+        completed, judge_text = self._judge(tool, status_code, data, params)
+        if cancelled:
+            completed = False
+            judge_text = "cancelled by kill switch"
         stdout = data.get("stdout", "")
         ctx.trace.emit(
             TraceEventType.TOOL_RESULT,
             tool=tool,
-            status=resp.status_code,
+            status=status_code,
             mode=ToolMode.REAL,
             text=judge_text,
         )
-        for c in [claim]:
-            ctx.trace.emit(TraceEventType.CLAIMED_ACTION, text=c)
+        claims = [] if cancelled else [claim]
+        for action_claim in claims:
+            ctx.trace.emit(TraceEventType.CLAIMED_ACTION, text=action_claim)
         ctx.trace.emit(TraceEventType.COST, cost_usd=data.get("execution_time", 0.0))
 
         return AgentResult(
@@ -349,6 +423,6 @@ class HexStrikeAdapter(AgentAdapter):
             completed=completed,
             tool_calls=[ToolCall(name=tool, params=params, ts=ts)],
             final_output=stdout[:2000],
-            claimed_actions=[claim],
+            claimed_actions=claims,
             raw_trace_path=str(ctx.trace.path),
         )

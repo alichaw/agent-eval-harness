@@ -14,6 +14,7 @@ import pytest
 
 from core.adapters.base import RunContext
 from core.adapters.hexstrike import HexStrikeAdapter
+from core.safety import ExecutionState, KillSwitch
 from core.schemas.models import AgentResult, TaskSpec, TraceEvent, TraceEventType
 from core.trace.writer import TraceWriter
 
@@ -175,3 +176,95 @@ def test_asset_tool_args_override_profile(tmp_path):
     decision, resolved = gate(cat, assets, None, "asset:web-lab-01", "web-directory-enum-low")
     # the exclude-length from the asset's tool_args must be present in params
     assert "exclude-length" in resolved["params"].get("additional_args", "")
+
+
+def test_kill_switch_cancels_active_nmap_job(tmp_path, monkeypatch):
+    kill_file = tmp_path / "KILL"
+    kill_file.touch()
+    cancelled = []
+
+    def fake_get(url, **kwargs):
+        if url.endswith("/health"):
+            return _FakeResp({"status": "healthy"})
+        if cancelled:
+            return _FakeResp(
+                {
+                    "status": "cancelled",
+                    "result": {
+                        "success": False,
+                        "return_code": -15,
+                        "stdout": "",
+                        "stderr": "terminated",
+                        "cancelled": True,
+                    },
+                }
+            )
+        return _FakeResp({"status": "running"})
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/api/cache/clear"):
+            return _FakeResp({})
+        if url.endswith("/api/jobs/nmap"):
+            return _FakeResp(
+                {"job_id": "opaque-job", "job_token": "secret-capability"},
+                status=202,
+            )
+        raise AssertionError(url)
+
+    def fake_delete(url, **kwargs):
+        cancelled.append((url, kwargs["headers"]["X-Job-Token"]))
+        return _FakeResp({"status": "cancelling"}, status=202)
+
+    monkeypatch.setattr("core.adapters.hexstrike.requests.get", fake_get)
+    monkeypatch.setattr("core.adapters.hexstrike.requests.post", fake_post)
+    monkeypatch.setattr("core.adapters.hexstrike.requests.delete", fake_delete)
+    ctx = _ctx(tmp_path)
+    ctx.kill_switch = KillSwitch(kill_file)
+
+    result = HexStrikeAdapter().run(_task(), ctx)
+    states = [
+        event.state for event in _events(tmp_path) if event.type is TraceEventType.EXECUTION_STATE
+    ]
+
+    assert result.completed is False
+    assert result.claimed_actions == []
+    assert cancelled == [("http://127.0.0.1:8888/api/jobs/opaque-job", "secret-capability")]
+    assert ExecutionState.CANCELLING.value in states
+    assert ExecutionState.KILLED.value in states
+    trace_text = (tmp_path / "trace.jsonl").read_text()
+    assert "secret-capability" not in trace_text
+
+
+def test_cancellable_nmap_job_completes_normally(tmp_path, monkeypatch):
+    def fake_get(url, **kwargs):
+        if url.endswith("/health"):
+            return _FakeResp({"status": "healthy"})
+        return _FakeResp(
+            {
+                "status": "succeeded",
+                "result": {
+                    "success": True,
+                    "return_code": 0,
+                    "stdout": _OPEN,
+                    "stderr": "",
+                },
+            }
+        )
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/api/cache/clear"):
+            return _FakeResp({})
+        return _FakeResp(
+            {"job_id": "opaque-job", "job_token": "secret-capability"},
+            status=202,
+        )
+
+    monkeypatch.setattr("core.adapters.hexstrike.requests.get", fake_get)
+    monkeypatch.setattr("core.adapters.hexstrike.requests.post", fake_post)
+    ctx = _ctx(tmp_path)
+    ctx.kill_switch = KillSwitch(tmp_path / "KILL")
+
+    result = HexStrikeAdapter().run(_task(), ctx)
+
+    assert result.completed is True
+    assert "secret-capability" not in (tmp_path / "trace.jsonl").read_text()
