@@ -27,7 +27,7 @@ def _approval_authority(spent_dir: str | Path):
     return ApprovalAuthority(secret.encode(), spent_dir)
 
 
-def _read_token_file(path: str | None) -> str:
+def _read_token_file(path: str | None, label: str = "approval token") -> str:
     if not path:
         return ""
     token_path = Path(path)
@@ -35,11 +35,11 @@ def _read_token_file(path: str | None) -> str:
         mode = stat.S_IMODE(token_path.stat().st_mode)
         token = token_path.read_text(encoding="utf-8").strip()
     except FileNotFoundError as exc:
-        raise SystemExit(f"approval token file not found: {token_path}") from exc
+        raise SystemExit(f"{label} file not found: {token_path}") from exc
     if mode & 0o077:
-        raise SystemExit("approval token file must have mode 0600")
+        raise SystemExit(f"{label} file must have mode 0600")
     if not token:
-        raise SystemExit("approval token file is empty")
+        raise SystemExit(f"{label} file is empty")
     return token
 
 
@@ -109,6 +109,9 @@ def cmd_run(args) -> int:
 
     authority = _approval_authority(args.approval_spent_dir)
     token = _read_token_file(args.approval_token_file)
+    job_create_token = _read_token_file(
+        args.job_create_token_file, "job create token"
+    )
     if token and authority is None:
         raise SystemExit("HARNESS_APPROVAL_SECRET is required with an approval token")
 
@@ -118,6 +121,7 @@ def cmd_run(args) -> int:
         catalog=catalog,
         assets=assets,
         approval_token=token,
+        job_create_token=job_create_token,
         approval_authority=authority,
         kill_switch=KillSwitch(Path(args.kill_switch_file)),
     )
@@ -224,6 +228,11 @@ def main(argv: list[str] | None = None) -> int:
         "--approval-spent-dir",
         default="config/local/approval-spent",
         help="local directory for consumed-token markers",
+    )
+    p_run.add_argument(
+        "--job-create-token-file",
+        default=None,
+        help="0600 file containing the HexStrike job creation capability",
     )
     p_run.add_argument(
         "--kill-switch-file",
