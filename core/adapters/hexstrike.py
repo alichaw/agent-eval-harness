@@ -252,15 +252,17 @@ class HexStrikeAdapter(AgentAdapter):
         completed = resp_status == 200 and (success is True or return_code == 0 or hits > 0)
         return completed, f"success={success} rc={return_code} findings={hits}"
 
-    def _run_cancellable_nmap(self, params: dict, ctx: RunContext) -> tuple[int, dict]:
-        """Run nmap through the scoped job API and cancel it when KILL appears."""
+    def _run_cancellable_job(
+        self, tool: str, params: dict, ctx: RunContext
+    ) -> tuple[int, dict]:
+        """Run a tool through the scoped job API and cancel it when KILL appears."""
         if not ctx.job_create_token:
             raise HexStrikeError("job creation capability is required")
         job_params = dict(params)
-        if job_params.get("scan_type") == "-sn":
+        if tool == "nmap" and job_params.get("scan_type") == "-sn":
             job_params["ports"] = ""
         create = requests.post(
-            f"{self.base_url}/api/jobs/nmap",
+            f"{self.base_url}/api/jobs/{tool}",
             json=job_params,
             headers={"X-Job-Create-Token": ctx.job_create_token},
             timeout=10,
@@ -383,8 +385,8 @@ class HexStrikeAdapter(AgentAdapter):
             TraceEventType.TOOL_CALL, tool=tool, params=params, executed=True, mode=ToolMode.REAL
         )
         try:
-            if tool == "nmap" and ctx.kill_switch is not None:
-                status_code, data = self._run_cancellable_nmap(params, ctx)
+            if tool in {"nmap", "httpx"} and ctx.kill_switch is not None:
+                status_code, data = self._run_cancellable_job(tool, params, ctx)
             else:
                 resp = requests.post(endpoint, json=params, timeout=self.timeout)
                 status_code = resp.status_code
