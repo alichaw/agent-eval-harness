@@ -1,0 +1,80 @@
+# policy.yaml — production-grade, default-deny.
+# Configured for internal network SEGMENTATION TESTING (T1 recon + T2 scan).
+default: deny
+
+# ── Tool allowlist by tier (see 05_capability_authorization_model.md) ────────
+# T1 recon (autonomous) + T2 scan (approval). T3 exploit tools are ABSENT here
+# AND have no profile — the agent has no capability to invoke them at all.
+allowed_tools:
+  # T1 · recon (low risk, autonomous)
+  - nmap
+  - arp-scan
+  - netdiscover
+  - traceroute
+  - tcptraceroute
+  - nc
+  - httpx
+  - whatweb
+  - nbtscan
+  # T2 · scan / enum (allowed but require approval — see active_tools)
+  - masscan
+  - nuclei
+  - nikto
+  - snmp-check
+  - smbclient
+  - smbmap
+  - rpcclient
+  - ldapsearch
+  - nxc
+  - gobuster
+  - ffuf
+  - feroxbuster
+
+# T2 active/intrusive tools: allowed but REQUIRE_APPROVAL before executing.
+active_tools:
+  - masscan       # very high traffic
+  - nuclei
+  - nikto
+  - snmp-check
+  - smbclient
+  - smbmap
+  - rpcclient
+  - ldapsearch
+  - nxc           # near-high-risk SMB/AD enumeration
+  - gobuster
+  - ffuf
+  - feroxbuster
+  # NOTE: a full nmap -sV/-sC/-p- is active too; low-impact nmap -sn stays autonomous.
+  # Tier is decided by PROFILE, so the same nmap binary is T1 (ping sweep) or T2 (deep scan).
+
+# ── Target Matrix ────────────────────────────────────────────────────────────
+# ONLY manager-authorised segments (from the WRITTEN scope). Replace the examples
+# with the real authorised ranges before any internal run.
+allowed_targets:
+  - juiceshop
+  - t1-target
+  - 192.0.2.10/32
+  # - 10.20.0.0/24         # authorised test VLAN        (example — replace)
+  # - 10.20.1.0/24         # authorised endpoint segment (example — replace)
+
+# ── HARD EXCLUSIONS — checked FIRST, win over allowed_targets ────────────────
+# A target matching any of these is REFUSED even if it also falls inside an
+# authorised segment. Production, OT, and other teams must NEVER be scanned.
+# Fill from the authorised scope's exclusion list.
+denied_targets: []
+  # - 10.0.0.0/24          # production servers — NEVER   (example)
+  # - 10.99.0.0/16         # OT / ICS — NEVER             (example)
+  # - 10.50.0.0/16         # other department — NEVER     (example)
+
+max_cost_usd: 1.0
+
+# extra blacklist layer (on top of the allowlist) — block exploit/vuln scripts
+deny_flags:
+  nmap:
+    - "--script=exploit"
+    - "--script=vuln"
+  # sqlmap dump/shell are blocked here too, in case a T2 sqlmap profile is ever added
+  sqlmap:
+    - "--dump"
+    - "--os-shell"
+    - "--os-pwn"
