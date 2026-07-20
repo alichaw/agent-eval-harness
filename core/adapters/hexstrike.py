@@ -254,7 +254,14 @@ class HexStrikeAdapter(AgentAdapter):
 
     def _run_cancellable_nmap(self, params: dict, ctx: RunContext) -> tuple[int, dict]:
         """Run nmap through the scoped job API and cancel it when KILL appears."""
-        create = requests.post(f"{self.base_url}/api/jobs/nmap", json=params, timeout=10)
+        if not ctx.job_create_token:
+            raise HexStrikeError("job creation capability is required")
+        create = requests.post(
+            f"{self.base_url}/api/jobs/nmap",
+            json=params,
+            headers={"X-Job-Create-Token": ctx.job_create_token},
+            timeout=10,
+        )
         if create.status_code != 202:
             detail = create.json().get("error", "cancellable job API unavailable")
             raise HexStrikeError(f"cancellable job rejected: {detail}")
