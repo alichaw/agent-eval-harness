@@ -299,3 +299,59 @@ def test_cancellable_job_requires_create_capability(tmp_path, monkeypatch):
     ]
     assert errors
     assert "creation capability is required" in errors[-1].text
+
+
+def test_cancellable_httpx_job_uses_structured_authenticated_request(
+    tmp_path, monkeypatch
+):
+    def fake_get(url, **kwargs):
+        if url.endswith("/health"):
+            return _FakeResp({"status": "healthy"})
+        return _FakeResp(
+            {
+                "status": "succeeded",
+                "result": {
+                    "success": True,
+                    "return_code": 0,
+                    "stdout": "http://172.18.0.2:3000 [200]",
+                    "stderr": "",
+                },
+            }
+        )
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/api/cache/clear"):
+            return _FakeResp({})
+        assert url.endswith("/api/jobs/httpx")
+        assert kwargs["headers"]["X-Job-Create-Token"] == "create-secret"
+        assert kwargs["json"]["target"] == "http://172.18.0.2:3000"
+        assert kwargs["json"]["threads"] == 10
+        assert "additional_args" not in kwargs["json"]
+        return _FakeResp(
+            {"job_id": "opaque-job", "job_token": "secret-capability"},
+            status=202,
+        )
+
+    monkeypatch.setattr("core.adapters.hexstrike.requests.get", fake_get)
+    monkeypatch.setattr("core.adapters.hexstrike.requests.post", fake_post)
+    ctx = _ctx(tmp_path)
+    ctx.kill_switch = KillSwitch(tmp_path / "KILL")
+    ctx.job_create_token = "create-secret"
+
+    result = HexStrikeAdapter().run(
+        _task(
+            tool="httpx",
+            probe=True,
+            tech_detect=True,
+            status_code=True,
+            title=True,
+            web_server=True,
+            threads=10,
+        ),
+        ctx,
+    )
+
+    assert result.completed is True
+    trace_text = (tmp_path / "trace.jsonl").read_text()
+    assert "create-secret" not in trace_text
+    assert "secret-capability" not in trace_text
