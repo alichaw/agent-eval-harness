@@ -31,6 +31,7 @@ def _policy():
             "nmap",
             "gobuster",
             "httpx",
+            "nuclei",
             "none",
         ],
         allowed_targets=[
@@ -239,3 +240,31 @@ def test_late_kill_switch_does_not_relabel_completed_adapter(tmp_path):
     ]
 
     assert states[-1] == ExecutionState.VERIFIED.value
+
+
+
+def test_bounded_nuclei_profile_requires_approval_and_has_no_raw_flags():
+    decision, resolved = gate(
+        _cat(),
+        _assets(),
+        _policy(),
+        "asset:web-lab-01",
+        "web-vulnerability-scan-bounded",
+    )
+
+    assert decision.verdict is Verdict.REQUIRE_APPROVAL
+    assert resolved is not None
+    assert resolved["tool"] == "nuclei"
+    profile = resolved["profile"]
+    assert profile.approval_required is True
+    assert profile.risk_tier.value == "medium"
+
+    params = resolved["params"]
+    assert params["severity"] == "info,low,medium"
+    assert params["tags"] == "tech,misconfig,exposure"
+    assert params["rate_limit"] == 5
+    assert params["concurrency"] == 1
+    assert params["timeout"] == 5
+    assert "additional_args" not in params
+    assert "templates" not in params
+    assert "template_url" not in params
