@@ -355,3 +355,86 @@ def test_cancellable_httpx_job_uses_structured_authenticated_request(
     trace_text = (tmp_path / "trace.jsonl").read_text()
     assert "create-secret" not in trace_text
     assert "secret-capability" not in trace_text
+
+
+def test_cancellable_gobuster_job_converts_only_safe_asset_argument(
+    tmp_path, monkeypatch
+):
+    def fake_get(url, **kwargs):
+        if url.endswith("/health"):
+            return _FakeResp({"status": "healthy"})
+        return _FakeResp(
+            {
+                "status": "succeeded",
+                "result": {
+                    "success": True,
+                    "return_code": 0,
+                    "stdout": "/api (Status: 200)",
+                    "stderr": "",
+                },
+            }
+        )
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/api/cache/clear"):
+            return _FakeResp({})
+        assert url.endswith("/api/jobs/gobuster")
+        assert kwargs["headers"]["X-Job-Create-Token"] == "create-secret"
+        assert kwargs["json"] == {
+            "url": "http://172.18.0.2:3000",
+            "mode": "dir",
+            "wordlist": "/usr/share/wordlists/dirb/common.txt",
+            "exclude_length": 9903,
+        }
+        return _FakeResp(
+            {"job_id": "opaque-job", "job_token": "secret-capability"},
+            status=202,
+        )
+
+    monkeypatch.setattr("core.adapters.hexstrike.requests.get", fake_get)
+    monkeypatch.setattr("core.adapters.hexstrike.requests.post", fake_post)
+    ctx = _ctx(tmp_path)
+    ctx.kill_switch = KillSwitch(tmp_path / "KILL")
+    ctx.job_create_token = "create-secret"
+
+    result = HexStrikeAdapter().run(
+        _task(
+            tool="gobuster",
+            mode="dir",
+            wordlist="/usr/share/wordlists/dirb/common.txt",
+            additional_args="--exclude-length 9903",
+        ),
+        ctx,
+    )
+
+    assert result.completed is True
+    assert "secret-capability" not in (tmp_path / "trace.jsonl").read_text()
+
+
+def test_cancellable_gobuster_rejects_unstructured_asset_arguments(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        "core.adapters.hexstrike.requests.get",
+        lambda *args, **kwargs: _FakeResp({"status": "healthy"}),
+    )
+    monkeypatch.setattr(
+        "core.adapters.hexstrike.requests.post",
+        lambda *args, **kwargs: _FakeResp({}),
+    )
+    ctx = _ctx(tmp_path)
+    ctx.kill_switch = KillSwitch(tmp_path / "KILL")
+    ctx.job_create_token = "create-secret"
+
+    result = HexStrikeAdapter().run(
+        _task(tool="gobuster", additional_args="--exclude-length 1; id"),
+        ctx,
+    )
+
+    assert result.completed is False
+    errors = [
+        event.text
+        for event in _events(tmp_path)
+        if event.type is TraceEventType.ERROR
+    ]
+    assert any("unsupported gobuster asset arguments" in text for text in errors)
