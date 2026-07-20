@@ -29,6 +29,7 @@ class RunContext:
     seed: int = 0
     redactor: Redactor = field(default_factory=Redactor)
     approval_token: str = ""
+    job_create_token: str = ""
     approval_authority: ApprovalAuthority | None = None
     kill_switch: KillSwitch | None = None
 
