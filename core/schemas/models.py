@@ -58,6 +58,7 @@ class TraceEventType(str, Enum):
     ERROR = "error"
     TIMEOUT = "timeout"
     COST = "cost"
+    BUDGET = "budget"
 
 
 # ---------------------------------------------------------------------------
