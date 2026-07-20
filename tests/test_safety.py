@@ -8,8 +8,6 @@ from core.adapters.base import RunContext
 from core.executor import execute_profile
 from core.policy import Policy
 from core.profiles import AssetRegistry, ProfileCatalog
-from core.schemas.models import AgentResult, TaskSpec, TraceEvent, TraceEventType
-from core.trace.writer import TraceWriter
 from core.safety import (
     ApprovalAuthority,
     ApprovalError,
@@ -17,6 +15,8 @@ from core.safety import (
     KillSwitch,
     profile_fingerprint,
 )
+from core.schemas.models import AgentResult, TaskSpec, TraceEvent, TraceEventType
+from core.trace.writer import TraceWriter
 
 
 def _profile(tmp_path):
@@ -198,9 +198,7 @@ def test_valid_approval_runs_once_and_emits_states(tmp_path):
         TraceEvent.model_validate_json(line)
         for line in (tmp_path / "trace.jsonl").read_text().splitlines()
     ]
-    states = [
-        event.state for event in events if event.type is TraceEventType.EXECUTION_STATE
-    ]
+    states = [event.state for event in events if event.type is TraceEventType.EXECUTION_STATE]
     assert states == ["proposed", "approved", "running", "verified"]
 
 
