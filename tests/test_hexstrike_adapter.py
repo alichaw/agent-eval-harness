@@ -82,7 +82,6 @@ def _patch_nmap(monkeypatch, stdout, return_code=0, status=200):
     def fake_post(url, **kwargs):
         if url.endswith("/api/cache/clear"):
             return _FakeResp({})
-        assert kwargs["headers"]["X-Job-Create-Token"] == "create-secret"
         return _FakeResp(
             {"return_code": return_code, "stdout": stdout, "execution_time": 1.2}, status=status
         )
@@ -257,6 +256,7 @@ def test_cancellable_nmap_job_completes_normally(tmp_path, monkeypatch):
     def fake_post(url, **kwargs):
         if url.endswith("/api/cache/clear"):
             return _FakeResp({})
+        assert kwargs["headers"]["X-Job-Create-Token"] == "create-secret"
         return _FakeResp(
             {"job_id": "opaque-job", "job_token": "secret-capability"},
             status=202,
