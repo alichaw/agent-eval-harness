@@ -104,7 +104,7 @@ profiles:
     description: Discover live hosts in an authorised segment (nmap -sn ping sweep, no port scan).
     interaction_mode: active
     risk_tier: low
-    allowed_asset_types: [network_segment, web_lab]
+    allowed_asset_types: [network_segment, host, web_lab]
     tool_id: nmap
     parameters: {scan_type: "-sn", ports: ""}
     limits: {max_tool_calls: 1, max_duration_seconds: 120, max_requests_per_second: 50}
