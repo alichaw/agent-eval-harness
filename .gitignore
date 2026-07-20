@@ -5,3 +5,4 @@ __pycache__/
 runs/
 *.log
 runs_test/
+config/local/

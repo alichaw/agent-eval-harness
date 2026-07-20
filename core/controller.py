@@ -71,10 +71,16 @@ class Controller:
             raise ProfileError("profile-driven case but no catalog/assets loaded")
         profile = self.catalog.get(case.profile_id)  # fail-closed on unknown
         asset = self.assets.resolve(case.asset_id)  # fail-closed on unknown
+        params = dict(
+            profile.parameters,
+            ports=asset.get("ports", ""),
+        )
+        params.update(asset.get("tool_args", {}) or {})
+
         return {
             "tool": profile.tool_id,
             "target": asset.get("target", ""),
-            "params": dict(profile.parameters, ports=asset.get("ports", "")),
+            "params": params,
             "profile": profile,
         }
 
@@ -125,7 +131,8 @@ class Controller:
                     default=self.policy.default,
                     allowed_tools=self.policy.allowed_tools,
                     allowed_targets=self.policy.allowed_targets,
-                    active_tools=[],  # profile decides approval, not tool name
+                    denied_targets=self.policy.denied_targets,
+                    active_tools=[],
                     max_cost_usd=self.policy.max_cost_usd,
                     deny_flags=self.policy.deny_flags,
                 )
@@ -179,8 +186,22 @@ class Controller:
                 (run_dir / "result.json").write_text(json.dumps(result_doc, indent=2))
                 return run_dir
 
+        execution_case = case
+
+        if resolved is not None:
+            execution_params = {
+                **resolved["params"],
+                "tool": resolved["tool"],
+            }
+            execution_case = case.model_copy(
+                update={
+                    "target": resolved["target"],
+                    "agent_params": execution_params,
+                }
+            )
+
         started = time.time()
-        result: AgentResult = agent.run(case, ctx)
+        result: AgentResult = agent.run(execution_case, ctx)
         elapsed = round(time.time() - started, 3)
 
         # ACTION VERIFIER (W4): don't trust the agent's self-report. Cross-check its

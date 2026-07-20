@@ -1,0 +1,10 @@
+id: profile_host_discovery_vm
+version: v1
+category: capability.recon.host_discovery
+description: T1 host discovery against one authorised endpoint.
+task: "Determine whether the authorised endpoint is online."
+scoring:
+  success_predicate: "profile_executed"
+tool_mode: real
+asset_id: "asset:vm-lab-01"
+profile_id: "host-discovery-ping-sweep"
