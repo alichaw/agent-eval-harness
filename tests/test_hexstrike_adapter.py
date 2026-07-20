@@ -479,6 +479,7 @@ def test_cancellable_nuclei_job_uses_only_bounded_structured_fields(tmp_path, mo
 
     assert result.completed is False
     assert result.final_output == "template configuration unavailable"
+    assert result.claimed_actions == []
     trace_text = (tmp_path / "trace.jsonl").read_text()
     assert "create-secret" not in trace_text
     assert "secret-capability" not in trace_text
