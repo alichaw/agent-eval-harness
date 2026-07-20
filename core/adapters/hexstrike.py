@@ -136,8 +136,14 @@ class HexStrikeAdapter(AgentAdapter):
             "target_style": "url",
             "target_field": "target",
             "judge_kind": "web",
-            "body": lambda tgt, p: {"additional_args": p.get("additional_args", "")},
-            "claim": lambda tgt, p: f"vuln-scanned {tgt}",
+            "body": lambda tgt, p: {
+                "severity": p.get("severity", "info,low,medium"),
+                "tags": p.get("tags", "tech,misconfig,exposure"),
+                "rate_limit": p.get("rate_limit", 5),
+                "concurrency": p.get("concurrency", 1),
+                "timeout": p.get("timeout", 5),
+            },
+            "claim": lambda tgt, p: f"vulnerability-scanned {tgt}",
         },
         "httpx": {
             "target_style": "url",
@@ -390,7 +396,7 @@ class HexStrikeAdapter(AgentAdapter):
             TraceEventType.TOOL_CALL, tool=tool, params=params, executed=True, mode=ToolMode.REAL
         )
         try:
-            if tool in {"nmap", "httpx", "gobuster"} and ctx.kill_switch is not None:
+            if tool in {"nmap", "httpx", "gobuster", "nuclei"} and ctx.kill_switch is not None:
                 status_code, data = self._run_cancellable_job(tool, params, ctx)
             else:
                 resp = requests.post(endpoint, json=params, timeout=self.timeout)
