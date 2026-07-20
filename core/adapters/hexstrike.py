@@ -275,19 +275,35 @@ class HexStrikeAdapter(AgentAdapter):
                     state=ExecutionState.CANCELLING.value,
                     text="cancelling active HexStrike job",
                 )
-                requests.delete(job_url, headers=headers, timeout=10)
-                ctx.trace.emit(
-                    TraceEventType.EXECUTION_STATE,
-                    state=ExecutionState.KILLED.value,
-                    text="active HexStrike job cancelled",
-                )
-                return 200, {
-                    "success": False,
-                    "return_code": -15,
-                    "stdout": "",
-                    "stderr": "cancelled by kill switch",
-                    "cancelled": True,
-                }
+                cancel_response = requests.delete(job_url, headers=headers, timeout=10)
+                if cancel_response.status_code not in {200, 202}:
+                    raise HexStrikeError(
+                        f"job cancellation failed: HTTP {cancel_response.status_code}"
+                    )
+                cancel_deadline = time.monotonic() + 5
+                while time.monotonic() < cancel_deadline:
+                    confirmation = requests.get(job_url, headers=headers, timeout=10)
+                    if confirmation.status_code != 200:
+                        raise HexStrikeError(
+                            f"cancellation status failed: HTTP {confirmation.status_code}"
+                        )
+                    cancelled_job = confirmation.json()
+                    status = cancelled_job.get("status")
+                    if status == "cancelled":
+                        result = cancelled_job.get("result", {})
+                        result["cancelled"] = True
+                        ctx.trace.emit(
+                            TraceEventType.EXECUTION_STATE,
+                            state=ExecutionState.KILLED.value,
+                            text="active HexStrike job cancellation confirmed",
+                        )
+                        return confirmation.status_code, result
+                    if status in {"succeeded", "failed"}:
+                        raise HexStrikeError(
+                            "job reached a terminal state before cancellation confirmation"
+                        )
+                    time.sleep(0.1)
+                raise HexStrikeError("server did not confirm job cancellation")
 
             response = requests.get(job_url, headers=headers, timeout=10)
             if response.status_code != 200:
