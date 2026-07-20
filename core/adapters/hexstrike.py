@@ -197,15 +197,33 @@ class HexStrikeAdapter(AgentAdapter):
         body = {spec["target_field"]: tgt, **spec["body"](tgt, p)}
         return self._endpoint(tool, spec), body, spec["claim"](tgt, p)
 
-    def _judge(self, tool: str, resp_status: int, data: dict) -> tuple[bool, str]:
+    def _judge(
+        self,
+        tool: str,
+        resp_status: int,
+        data: dict,
+        params: dict | None = None,
+    ) -> tuple[bool, str]:
         """Completion per the tool's judge_kind. 'ports' = nmap reachability by port
         state; 'web' = success flag / rc / visible findings (a scan that ran but found
         nothing is still completed)."""
+        params = params or {}
         spec = self.TOOL_SPECS.get(tool, {})
         kind = spec.get("judge_kind", "web")
         return_code = data.get("return_code")
         stdout = data.get("stdout", "")
         if kind == "ports":
+            if tool == "nmap" and params.get("scan_type") == "-sn":
+                alive = bool(
+                    re.search(
+                        r"\bHost is up\b|\b[1-9]\d*\s+hosts?\s+up\b",
+                        stdout,
+                        re.IGNORECASE,
+                    )
+                )
+                completed = resp_status == 200 and return_code == 0 and alive
+                return completed, f"rc={return_code} live_hosts={'yes' if alive else 'no'}"
+
             states = self._port_states(stdout)
             reachable = any(s in ("open", "closed") for s in states)  # filtered=>blocked
             completed = resp_status == 200 and return_code == 0 and reachable
@@ -313,14 +331,14 @@ class HexStrikeAdapter(AgentAdapter):
                 raw_trace_path=str(ctx.trace.path),
             )
 
-        completed, summary = self._judge(tool, resp.status_code, data)
+        completed, judge_text = self._judge(tool, resp.status_code, data, params)
         stdout = data.get("stdout", "")
         ctx.trace.emit(
             TraceEventType.TOOL_RESULT,
             tool=tool,
             status=resp.status_code,
             mode=ToolMode.REAL,
-            text=summary,
+            text=judge_text,
         )
         for c in [claim]:
             ctx.trace.emit(TraceEventType.CLAIMED_ACTION, text=c)
