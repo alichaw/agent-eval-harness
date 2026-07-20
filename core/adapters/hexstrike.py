@@ -256,9 +256,12 @@ class HexStrikeAdapter(AgentAdapter):
         """Run nmap through the scoped job API and cancel it when KILL appears."""
         if not ctx.job_create_token:
             raise HexStrikeError("job creation capability is required")
+        job_params = dict(params)
+        if job_params.get("scan_type") == "-sn":
+            job_params["ports"] = ""
         create = requests.post(
             f"{self.base_url}/api/jobs/nmap",
-            json=params,
+            json=job_params,
             headers={"X-Job-Create-Token": ctx.job_create_token},
             timeout=10,
         )
