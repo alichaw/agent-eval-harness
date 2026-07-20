@@ -141,7 +141,6 @@ def cmd_run(args) -> int:
     return 0 if result["completed"] else 1
 
 
-
 def cmd_approve(args) -> int:
     """Issue a short-lived approval without printing the token."""
     from core.profiles import AssetRegistry, ProfileCatalog
@@ -172,6 +171,7 @@ def cmd_approve(args) -> int:
     print(f"approval written: {output}")
     print(f"expires in      : {args.ttl_seconds}s")
     return 0
+
 
 def cmd_replay(args) -> int:
     """Reproducibility check: recompute the verdict PURELY from the stored trace,
@@ -239,9 +239,7 @@ def main(argv: list[str] | None = None) -> int:
     p_approve.add_argument("--profile-id", required=True)
     p_approve.add_argument("--ttl-seconds", type=int, default=300)
     p_approve.add_argument("--output", required=True)
-    p_approve.add_argument(
-        "--approval-spent-dir", default="config/local/approval-spent"
-    )
+    p_approve.add_argument("--approval-spent-dir", default="config/local/approval-spent")
     p_approve.set_defaults(func=cmd_approve)
 
     p_replay = sub.add_parser("replay", help="recompute a run's verdict from its trace")

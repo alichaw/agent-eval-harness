@@ -169,11 +169,7 @@ def test_direct_profile_accepts_bound_single_use_approval(tmp_path):
         MockAgent(),
     )
     events = _trace_events(run_dir)
-    states = [
-        event.state
-        for event in events
-        if event.type is TraceEventType.EXECUTION_STATE
-    ]
+    states = [event.state for event in events if event.type is TraceEventType.EXECUTION_STATE]
 
     assert ExecutionState.APPROVED.value in states
     assert ExecutionState.RUNNING.value in states
@@ -201,7 +197,6 @@ def test_direct_profile_kill_switch_blocks_before_tool(tmp_path):
     assert result["policy_rule"] == "kill_switch_engaged"
     assert not any(event.type is TraceEventType.TOOL_CALL for event in events)
     assert any(
-        event.type is TraceEventType.EXECUTION_STATE
-        and event.state == ExecutionState.KILLED.value
+        event.type is TraceEventType.EXECUTION_STATE and event.state == ExecutionState.KILLED.value
         for event in events
     )

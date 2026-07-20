@@ -24,7 +24,13 @@ import yaml
 from core.adapters.base import AgentAdapter, RunContext
 from core.policy import Policy
 from core.redaction import Redactor
-from core.safety import ApprovalAuthority, ApprovalError, ExecutionState, KillSwitch, profile_fingerprint
+from core.safety import (
+    ApprovalAuthority,
+    ApprovalError,
+    ExecutionState,
+    KillSwitch,
+    profile_fingerprint,
+)
 from core.schemas.models import SCHEMA_VERSION, AgentResult, TaskSpec, TraceEventType
 from core.trace.writer import TraceWriter
 
@@ -163,9 +169,7 @@ class Controller:
                 "claimed_actions": [],
                 "final_output_head": "",
             }
-            (run_dir / "result.json").write_text(
-                json.dumps(redactor.value(result_doc), indent=2)
-            )
+            (run_dir / "result.json").write_text(json.dumps(redactor.value(result_doc), indent=2))
             return run_dir
 
         if self.policy is not None:
@@ -211,9 +215,7 @@ class Controller:
                                 profile_fingerprint(resolved["profile"]),
                             )
                         except ApprovalError as exc:
-                            decision = PolicyDecision(
-                                Verdict.DENY, "approval_invalid", str(exc)
-                            )
+                            decision = PolicyDecision(Verdict.DENY, "approval_invalid", str(exc))
                         else:
                             ctx.trace.emit(
                                 TraceEventType.EXECUTION_STATE,
