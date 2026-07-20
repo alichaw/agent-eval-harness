@@ -66,10 +66,13 @@ class ApprovalAuthority:
     def _encode(raw: bytes) -> str:
         return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
-    @staticmethod
-    def _decode(value: str) -> bytes:
+    @classmethod
+    def _decode(cls, value: str) -> bytes:
         padding = "=" * (-len(value) % 4)
-        return base64.urlsafe_b64decode(value + padding)
+        raw = base64.urlsafe_b64decode(value + padding)
+        if cls._encode(raw) != value:
+            raise ApprovalError("non-canonical approval token encoding")
+        return raw
 
     def issue(
         self,
