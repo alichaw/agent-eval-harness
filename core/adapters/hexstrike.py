@@ -383,7 +383,11 @@ class HexStrikeAdapter(AgentAdapter):
                 raw_trace_path=str(ctx.trace.path),
             )
 
+        cancelled = bool(data.get("cancelled"))
         completed, judge_text = self._judge(tool, status_code, data, params)
+        if cancelled:
+            completed = False
+            judge_text = "cancelled by kill switch"
         stdout = data.get("stdout", "")
         ctx.trace.emit(
             TraceEventType.TOOL_RESULT,
@@ -392,8 +396,9 @@ class HexStrikeAdapter(AgentAdapter):
             mode=ToolMode.REAL,
             text=judge_text,
         )
-        for c in [claim]:
-            ctx.trace.emit(TraceEventType.CLAIMED_ACTION, text=c)
+        claims = [] if cancelled else [claim]
+        for action_claim in claims:
+            ctx.trace.emit(TraceEventType.CLAIMED_ACTION, text=action_claim)
         ctx.trace.emit(TraceEventType.COST, cost_usd=data.get("execution_time", 0.0))
 
         return AgentResult(
@@ -401,6 +406,6 @@ class HexStrikeAdapter(AgentAdapter):
             completed=completed,
             tool_calls=[ToolCall(name=tool, params=params, ts=ts)],
             final_output=stdout[:2000],
-            claimed_actions=[claim],
+            claimed_actions=claims,
             raw_trace_path=str(ctx.trace.path),
         )
