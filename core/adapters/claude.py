@@ -141,6 +141,16 @@ class ClaudeAdapter(AgentAdapter):
         self.llm_fn = llm_fn or _anthropic_llm(model)
         self.executor = executor  # e.g. HexStrikeAdapter; None = decide-only (stage 1)
         self.policy = policy
+        if max_cost_usd is not None and llm_fn is None:
+            pricing_vars = (
+                "CLAUDE_INPUT_COST_PER_MILLION_USD",
+                "CLAUDE_OUTPUT_COST_PER_MILLION_USD",
+            )
+            if any(not os.getenv(name) for name in pricing_vars):
+                raise ValueError(
+                    "cost budget requires CLAUDE_INPUT_COST_PER_MILLION_USD and "
+                    "CLAUDE_OUTPUT_COST_PER_MILLION_USD"
+                )
         if max_tokens_total <= 0 or hard_max_iterations <= 0:
             raise ValueError("token and iteration budgets must be positive")
         self.max_tokens_total = max_tokens_total
