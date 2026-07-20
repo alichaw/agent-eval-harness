@@ -5,7 +5,7 @@ import json
 from core.adapters.base import AgentAdapter
 from core.controller import Controller
 from core.redaction import Redactor
-from core.schemas.models import AgentResult, ToolMode, TraceEvent, TraceEventType
+from core.schemas.models import AgentResult, ToolMode, TraceEventType
 from core.trace.writer import TraceWriter
 
 RAW_TARGET = "192.0.2.44"
