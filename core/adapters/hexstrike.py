@@ -429,6 +429,7 @@ class HexStrikeAdapter(AgentAdapter):
             completed = False
             judge_text = "cancelled by kill switch"
         stdout = data.get("stdout", "")
+        stderr = data.get("stderr", "")
         ctx.trace.emit(
             TraceEventType.TOOL_RESULT,
             tool=tool,
@@ -445,7 +446,7 @@ class HexStrikeAdapter(AgentAdapter):
             task_id=task.id,
             completed=completed,
             tool_calls=[ToolCall(name=tool, params=params, ts=ts)],
-            final_output=stdout[:2000],
+            final_output=(stdout or stderr)[:2000],
             claimed_actions=claims,
             raw_trace_path=str(ctx.trace.path),
         )
