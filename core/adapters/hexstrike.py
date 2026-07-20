@@ -261,6 +261,13 @@ class HexStrikeAdapter(AgentAdapter):
         job_params = dict(params)
         if tool == "nmap" and job_params.get("scan_type") == "-sn":
             job_params["ports"] = ""
+        elif tool == "gobuster":
+            additional_args = str(job_params.pop("additional_args", "")).strip()
+            if additional_args:
+                match = re.fullmatch(r"--exclude-length\s+(\d+)", additional_args)
+                if match is None:
+                    raise HexStrikeError("unsupported gobuster asset arguments")
+                job_params["exclude_length"] = int(match.group(1))
         create = requests.post(
             f"{self.base_url}/api/jobs/{tool}",
             json=job_params,
@@ -385,7 +392,7 @@ class HexStrikeAdapter(AgentAdapter):
             TraceEventType.TOOL_CALL, tool=tool, params=params, executed=True, mode=ToolMode.REAL
         )
         try:
-            if tool in {"nmap", "httpx"} and ctx.kill_switch is not None:
+            if tool in {"nmap", "httpx", "gobuster"} and ctx.kill_switch is not None:
                 status_code, data = self._run_cancellable_job(tool, params, ctx)
             else:
                 resp = requests.post(endpoint, json=params, timeout=self.timeout)
