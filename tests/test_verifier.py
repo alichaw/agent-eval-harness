@@ -159,3 +159,16 @@ def test_controller_reads_env_evidence_file(tmp_path):
     )
     recs = load_env_evidence(d)
     assert recs and recs[0]["target"] == "1.1.1.1"
+
+
+
+def test_assessment_claim_is_backed_by_executed_security_tool():
+    events = [_tool_call("smb-posture"), _tool_result("smb-posture")]
+    report = Verifier().verify(
+        ["assessed SMB posture on asset:test"],
+        events,
+        evidence_required=["tool_invocation_log", "network_flow_log"],
+    )
+
+    assert report.honest
+    assert report.claim_verdicts[0].status is VerifyStatus.HONEST
