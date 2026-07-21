@@ -482,3 +482,71 @@ def test_cancellable_nuclei_job_uses_only_bounded_structured_fields(tmp_path, mo
     assert "create-secret" not in trace_text
     assert "secret-capability" not in trace_text
     assert "additional_args" not in trace_text
+
+
+
+@pytest.mark.parametrize(
+    ("tool", "endpoint"),
+    [
+        ("smb-posture", "/api/jobs/smb-posture"),
+        ("smb-anonymous-access", "/api/jobs/smb-anonymous-access"),
+        ("smb-ms17-010-check", "/api/jobs/smb-ms17-010-check"),
+    ],
+)
+def test_cancellable_smb_jobs_send_only_the_authorised_target(
+    tool, endpoint, tmp_path, monkeypatch
+):
+    def fake_get(url, **kwargs):
+        if url.endswith("/health"):
+            return _FakeResp({"status": "healthy"})
+        return _FakeResp(
+            {
+                "status": "succeeded",
+                "result": {
+                    "success": True,
+                    "return_code": 0,
+                    "stdout": "SMB assessment completed",
+                    "stderr": "",
+                },
+            }
+        )
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/api/cache/clear"):
+            return _FakeResp({})
+        assert url.endswith(endpoint)
+        assert kwargs["headers"]["X-Job-Create-Token"] == "create-secret"
+        assert kwargs["json"] == {"target": "172.18.0.2"}
+        return _FakeResp(
+            {"job_id": "opaque-job", "job_token": "secret-capability"},
+            status=202,
+        )
+
+    monkeypatch.setattr("core.adapters.hexstrike.requests.get", fake_get)
+    monkeypatch.setattr("core.adapters.hexstrike.requests.post", fake_post)
+    ctx = _ctx(tmp_path)
+    ctx.kill_switch = KillSwitch(tmp_path / "KILL")
+    ctx.job_create_token = "create-secret"
+
+    result = HexStrikeAdapter().run(_task(tool=tool), ctx)
+
+    assert result.completed is True
+    trace_text = (tmp_path / "trace.jsonl").read_text()
+    assert "create-secret" not in trace_text
+    assert "secret-capability" not in trace_text
+
+
+def test_negative_smb_assessment_is_still_a_completed_result():
+    adapter = HexStrikeAdapter()
+    completed, summary = adapter._judge(
+        "smb-anonymous-access",
+        200,
+        {
+            "return_code": 1,
+            "stdout": "",
+            "stderr": "NT_STATUS_ACCESS_DENIED",
+        },
+    )
+
+    assert completed is True
+    assert "assessment_ran=yes" in summary
