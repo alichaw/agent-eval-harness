@@ -1,0 +1,9 @@
+id: profile_smb_ms17_010_check
+version: v1
+category: capability.scan.profile
+description: Approval-gated fixed SMB assessment.
+task: "Run the fixed non-exploit MS17-010 check on the authorised Windows host."
+scoring: {success_predicate: "profile_executed"}
+tool_mode: real
+asset_id: "asset:vm-lab-01"
+profile_id: "smb-ms17-010-check"
