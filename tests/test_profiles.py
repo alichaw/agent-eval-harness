@@ -32,6 +32,9 @@ def _policy():
             "gobuster",
             "httpx",
             "nuclei",
+            "smb-posture",
+            "smb-anonymous-access",
+            "smb-ms17-010-check",
             "none",
         ],
         allowed_targets=[
@@ -267,3 +270,33 @@ def test_bounded_nuclei_profile_requires_approval_and_has_no_raw_flags():
     assert "additional_args" not in params
     assert "templates" not in params
     assert "template_url" not in params
+
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "tool"),
+    [
+        ("smb-posture-assessment", "smb-posture"),
+        ("smb-anonymous-access-check", "smb-anonymous-access"),
+        ("smb-ms17-010-check", "smb-ms17-010-check"),
+    ],
+)
+def test_smb_profiles_require_approval_and_expose_no_commands(profile_id, tool):
+    decision, resolved = gate(
+        _cat(),
+        _assets(),
+        _policy(),
+        "asset:vm-lab-01",
+        profile_id,
+    )
+
+    assert decision.verdict is Verdict.REQUIRE_APPROVAL
+    assert resolved is not None
+    assert resolved["tool"] == tool
+    assert resolved["profile"].approval_required is True
+    params = resolved["params"]
+    assert "command" not in params
+    assert "scripts" not in params
+    assert "username" not in params
+    assert "password" not in params
+    assert "additional_args" not in params
