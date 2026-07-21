@@ -1,8 +1,12 @@
 """Domain models for evidence-driven investigations."""
+
 from __future__ import annotations
+
 from datetime import datetime
 from typing import Any, Literal
+
 from pydantic import BaseModel, Field, model_validator
+
 
 class ServiceObservation(BaseModel):
     asset_id: str = Field(min_length=1)
@@ -13,6 +17,7 @@ class ServiceObservation(BaseModel):
     product: str | None = None
     version: str | None = None
     evidence_id: str = Field(min_length=1)
+
 
 class Evidence(BaseModel):
     evidence_id: str = Field(min_length=1)
@@ -27,17 +32,21 @@ class Evidence(BaseModel):
     truncated: bool = False
     error: str | None = None
 
+
 class Finding(BaseModel):
     finding_id: str = Field(min_length=1)
     asset_id: str = Field(min_length=1)
     title: str = Field(min_length=1)
-    classification: Literal["observation", "potential_risk", "confirmed_vulnerability", "exploitable"]
+    classification: Literal[
+        "observation", "potential_risk", "confirmed_vulnerability", "exploitable"
+    ]
     status: Literal["confirmed", "unconfirmed", "refuted"]
     severity: Literal["info", "low", "medium", "high", "critical"]
     confidence: float = Field(ge=0.0, le=1.0)
     evidence_ids: list[str] = Field(min_length=1)
     contradicting_evidence_ids: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
+
 
 class InvestigationState(BaseModel):
     investigation_id: str = Field(min_length=1)
@@ -51,7 +60,7 @@ class InvestigationState(BaseModel):
     failed_capabilities: set[str] = Field(default_factory=set)
 
     @model_validator(mode="after")
-    def validate_references(self) -> "InvestigationState":
+    def validate_references(self) -> InvestigationState:
         ids = {item.evidence_id for item in self.evidence}
         if len(ids) != len(self.evidence):
             raise ValueError("evidence_id values must be unique")
