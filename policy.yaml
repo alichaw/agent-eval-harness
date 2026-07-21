@@ -19,6 +19,9 @@ allowed_tools:
   # T2 · scan / enum (allowed but require approval — see active_tools)
   - masscan
   - nuclei
+  - smb-posture
+  - smb-anonymous-access
+  - smb-ms17-010-check
   - nikto
   - snmp-check
   - smbclient
@@ -34,6 +37,9 @@ allowed_tools:
 active_tools:
   - masscan       # very high traffic
   - nuclei
+  - smb-posture
+  - smb-anonymous-access
+  - smb-ms17-010-check
   - nikto
   - snmp-check
   - smbclient
