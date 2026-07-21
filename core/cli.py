@@ -50,6 +50,7 @@ def _make_agent(
     policy=None,
     max_tokens_total: int = 20_000,
     max_cost_usd: float | None = None,
+    investigation_state_path: str | None = None,
 ):
     """Instantiate an adapter by name. Add new agents here — the ONLY place the CLI
     needs to know concrete adapters; everything else uses the base contract."""
@@ -64,12 +65,21 @@ def _make_agent(
     if name == "claude":
         from core.adapters.claude import ClaudeAdapter
         from core.adapters.hexstrike import HexStrikeAdapter
+        from core.investigation.models import InvestigationState
 
         if catalog is None or assets is None:
             raise SystemExit("--agent claude requires --profiles and --assets")
         cost_limit = max_cost_usd
         if cost_limit is None and policy is not None:
             cost_limit = policy.max_cost_usd
+        state = None
+        if investigation_state_path:
+            try:
+                state = InvestigationState.model_validate_json(
+                    Path(investigation_state_path).read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError) as exc:
+                raise SystemExit(f"invalid investigation state: {exc}") from exc
         return ClaudeAdapter(
             catalog,
             assets,
@@ -77,6 +87,7 @@ def _make_agent(
             policy=policy,
             max_tokens_total=max_tokens_total,
             max_cost_usd=cost_limit,
+            state=state,
         )
     raise SystemExit(f"unknown agent '{name}' (choices: mock, hexstrike, claude)")
 
@@ -103,6 +114,7 @@ def cmd_run(args) -> int:
         policy=policy,
         max_tokens_total=args.max_tokens_total,
         max_cost_usd=args.max_cost_usd,
+        investigation_state_path=args.investigation_state,
     )
 
     from core.safety import KillSwitch
@@ -236,6 +248,11 @@ def main(argv: list[str] | None = None) -> int:
         "--kill-switch-file",
         default="config/local/KILL",
         help="execution stops when this file exists",
+    )
+    p_run.add_argument(
+        "--investigation-state",
+        default=None,
+        help="resume Claude from a prior run's investigation_state.json",
     )
     p_run.set_defaults(func=cmd_run)
 

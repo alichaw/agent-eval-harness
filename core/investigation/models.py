@@ -56,6 +56,7 @@ class InvestigationState(BaseModel):
     evidence: list[Evidence] = Field(default_factory=list)
     findings: list[Finding] = Field(default_factory=list)
     executed_capabilities: set[str] = Field(default_factory=set)
+    pending_approval_capabilities: set[str] = Field(default_factory=set)
     blocked_capabilities: set[str] = Field(default_factory=set)
     failed_capabilities: set[str] = Field(default_factory=set)
 
