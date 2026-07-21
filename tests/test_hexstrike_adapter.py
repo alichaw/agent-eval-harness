@@ -424,7 +424,6 @@ def test_cancellable_gobuster_rejects_unstructured_asset_arguments(tmp_path, mon
     assert any("unsupported gobuster asset arguments" in text for text in errors)
 
 
-
 def test_cancellable_nuclei_job_uses_only_bounded_structured_fields(tmp_path, monkeypatch):
     def fake_get(url, **kwargs):
         if url.endswith("/health"):
@@ -482,7 +481,6 @@ def test_cancellable_nuclei_job_uses_only_bounded_structured_fields(tmp_path, mo
     assert "create-secret" not in trace_text
     assert "secret-capability" not in trace_text
     assert "additional_args" not in trace_text
-
 
 
 @pytest.mark.parametrize(

@@ -423,7 +423,19 @@ class HexStrikeAdapter(AgentAdapter):
             TraceEventType.TOOL_CALL, tool=tool, params=params, executed=True, mode=ToolMode.REAL
         )
         try:
-            if tool in {"nmap", "httpx", "gobuster", "nuclei", "smb-posture", "smb-anonymous-access", "smb-ms17-010-check"} and ctx.kill_switch is not None:
+            if (
+                tool
+                in {
+                    "nmap",
+                    "httpx",
+                    "gobuster",
+                    "nuclei",
+                    "smb-posture",
+                    "smb-anonymous-access",
+                    "smb-ms17-010-check",
+                }
+                and ctx.kill_switch is not None
+            ):
                 status_code, data = self._run_cancellable_job(tool, params, ctx)
             else:
                 resp = requests.post(endpoint, json=params, timeout=self.timeout)

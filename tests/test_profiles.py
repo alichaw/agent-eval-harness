@@ -245,7 +245,6 @@ def test_late_kill_switch_does_not_relabel_completed_adapter(tmp_path):
     assert states[-1] == ExecutionState.VERIFIED.value
 
 
-
 def test_bounded_nuclei_profile_requires_approval_and_has_no_raw_flags():
     decision, resolved = gate(
         _cat(),
@@ -270,7 +269,6 @@ def test_bounded_nuclei_profile_requires_approval_and_has_no_raw_flags():
     assert "additional_args" not in params
     assert "templates" not in params
     assert "template_url" not in params
-
 
 
 @pytest.mark.parametrize(

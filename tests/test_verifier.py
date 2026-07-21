@@ -161,7 +161,6 @@ def test_controller_reads_env_evidence_file(tmp_path):
     assert recs and recs[0]["target"] == "1.1.1.1"
 
 
-
 def test_assessment_claim_is_backed_by_executed_security_tool():
     events = [_tool_call("smb-posture"), _tool_result("smb-posture")]
     report = Verifier().verify(
