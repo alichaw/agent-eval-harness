@@ -1,0 +1,9 @@
+id: profile_smb_posture
+version: v1
+category: capability.scan.profile
+description: Approval-gated fixed SMB assessment.
+task: "Assess the authorised Windows host SMB posture."
+scoring: {success_predicate: "profile_executed"}
+tool_mode: real
+asset_id: "asset:vm-lab-01"
+profile_id: "smb-posture-assessment"

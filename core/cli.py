@@ -27,7 +27,7 @@ def _approval_authority(spent_dir: str | Path):
     return ApprovalAuthority(secret.encode(), spent_dir)
 
 
-def _read_token_file(path: str | None) -> str:
+def _read_token_file(path: str | None, label: str = "approval token") -> str:
     if not path:
         return ""
     token_path = Path(path)
@@ -35,11 +35,11 @@ def _read_token_file(path: str | None) -> str:
         mode = stat.S_IMODE(token_path.stat().st_mode)
         token = token_path.read_text(encoding="utf-8").strip()
     except FileNotFoundError as exc:
-        raise SystemExit(f"approval token file not found: {token_path}") from exc
+        raise SystemExit(f"{label} file not found: {token_path}") from exc
     if mode & 0o077:
-        raise SystemExit("approval token file must have mode 0600")
+        raise SystemExit(f"{label} file must have mode 0600")
     if not token:
-        raise SystemExit("approval token file is empty")
+        raise SystemExit(f"{label} file is empty")
     return token
 
 
@@ -50,6 +50,7 @@ def _make_agent(
     policy=None,
     max_tokens_total: int = 20_000,
     max_cost_usd: float | None = None,
+    investigation_state_path: str | None = None,
 ):
     """Instantiate an adapter by name. Add new agents here — the ONLY place the CLI
     needs to know concrete adapters; everything else uses the base contract."""
@@ -64,12 +65,21 @@ def _make_agent(
     if name == "claude":
         from core.adapters.claude import ClaudeAdapter
         from core.adapters.hexstrike import HexStrikeAdapter
+        from core.investigation.models import InvestigationState
 
         if catalog is None or assets is None:
             raise SystemExit("--agent claude requires --profiles and --assets")
         cost_limit = max_cost_usd
         if cost_limit is None and policy is not None:
             cost_limit = policy.max_cost_usd
+        state = None
+        if investigation_state_path:
+            try:
+                state = InvestigationState.model_validate_json(
+                    Path(investigation_state_path).read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError) as exc:
+                raise SystemExit(f"invalid investigation state: {exc}") from exc
         return ClaudeAdapter(
             catalog,
             assets,
@@ -77,6 +87,7 @@ def _make_agent(
             policy=policy,
             max_tokens_total=max_tokens_total,
             max_cost_usd=cost_limit,
+            state=state,
         )
     raise SystemExit(f"unknown agent '{name}' (choices: mock, hexstrike, claude)")
 
@@ -103,12 +114,14 @@ def cmd_run(args) -> int:
         policy=policy,
         max_tokens_total=args.max_tokens_total,
         max_cost_usd=args.max_cost_usd,
+        investigation_state_path=args.investigation_state,
     )
 
     from core.safety import KillSwitch
 
     authority = _approval_authority(args.approval_spent_dir)
     token = _read_token_file(args.approval_token_file)
+    job_create_token = _read_token_file(args.job_create_token_file, "job create token")
     if token and authority is None:
         raise SystemExit("HARNESS_APPROVAL_SECRET is required with an approval token")
 
@@ -118,6 +131,7 @@ def cmd_run(args) -> int:
         catalog=catalog,
         assets=assets,
         approval_token=token,
+        job_create_token=job_create_token,
         approval_authority=authority,
         kill_switch=KillSwitch(Path(args.kill_switch_file)),
     )
@@ -226,9 +240,19 @@ def main(argv: list[str] | None = None) -> int:
         help="local directory for consumed-token markers",
     )
     p_run.add_argument(
+        "--job-create-token-file",
+        default=None,
+        help="0600 file containing the HexStrike job creation capability",
+    )
+    p_run.add_argument(
         "--kill-switch-file",
         default="config/local/KILL",
         help="execution stops when this file exists",
+    )
+    p_run.add_argument(
+        "--investigation-state",
+        default=None,
+        help="resume Claude from a prior run's investigation_state.json",
     )
     p_run.set_defaults(func=cmd_run)
 

@@ -167,3 +167,70 @@ profiles:
     evidence_required:
       - tool_invocation_log
       - target_access_log
+
+  # T2 bounded vulnerability scan — always requires a single-use approval.
+  # Raw flags, custom templates, template paths, Interactsh, and multi-target
+  # input are structurally unavailable. The server owns the exact template set.
+  web-vulnerability-scan-bounded:
+    description: Run a bounded Nuclei scan against one authorised web lab asset.
+    interaction_mode: active
+    risk_tier: medium
+    allowed_asset_types: [web_lab]
+    tool_id: nuclei
+    parameters:
+      template_set: "baseline-web-v1"
+      rate_limit: 5
+      concurrency: 1
+      timeout: 5
+    limits:
+      max_targets: 1
+      max_ports: 1
+      max_tool_calls: 1
+      max_duration_seconds: 180
+      max_requests_per_second: 5
+      max_retries: 0
+    internet_egress: false
+    approval_required: true
+    evidence_required:
+      - tool_invocation_log
+      - target_access_log
+      - network_flow_log
+
+
+  # T2 Windows SMB/RPC assessment profiles. The server owns every command and
+  # NSE script; callers can select only the asset and profile.
+  smb-posture-assessment:
+    description: Assess SMB dialects, signing posture, time, and OS metadata on one authorised host.
+    interaction_mode: active
+    risk_tier: medium
+    allowed_asset_types: [host]
+    tool_id: smb-posture
+    parameters: {}
+    limits: {max_targets: 1, max_ports: 1, max_tool_calls: 1, max_duration_seconds: 120, max_requests_per_second: 5, max_retries: 0}
+    internet_egress: false
+    approval_required: true
+    evidence_required: [tool_invocation_log, target_access_log, network_flow_log]
+
+  smb-anonymous-access-check:
+    description: Check whether an authorised host permits anonymous SMB share listing.
+    interaction_mode: active
+    risk_tier: medium
+    allowed_asset_types: [host]
+    tool_id: smb-anonymous-access
+    parameters: {}
+    limits: {max_targets: 1, max_ports: 1, max_tool_calls: 1, max_duration_seconds: 60, max_requests_per_second: 2, max_retries: 0}
+    internet_egress: false
+    approval_required: true
+    evidence_required: [tool_invocation_log, target_access_log, network_flow_log]
+
+  smb-ms17-010-check:
+    description: Run the fixed non-exploit MS17-010 detection script on one authorised host.
+    interaction_mode: active
+    risk_tier: medium
+    allowed_asset_types: [host]
+    tool_id: smb-ms17-010-check
+    parameters: {}
+    limits: {max_targets: 1, max_ports: 1, max_tool_calls: 1, max_duration_seconds: 120, max_requests_per_second: 2, max_retries: 0}
+    internet_egress: false
+    approval_required: true
+    evidence_required: [tool_invocation_log, target_access_log, network_flow_log]

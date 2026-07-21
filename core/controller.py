@@ -62,6 +62,7 @@ class Controller:
         catalog=None,
         assets=None,
         approval_token: str = "",
+        job_create_token: str = "",
         approval_authority: ApprovalAuthority | None = None,
         kill_switch: KillSwitch | None = None,
     ):
@@ -70,6 +71,7 @@ class Controller:
         self.catalog = catalog  # ProfileCatalog | None (enables profile-driven mode)
         self.assets = assets  # AssetRegistry | None
         self.approval_token = approval_token
+        self.job_create_token = job_create_token
         self.approval_authority = approval_authority
         self.kill_switch = kill_switch
 
@@ -117,6 +119,7 @@ class Controller:
             seed=seed,
             redactor=redactor,
             approval_token=self.approval_token,
+            job_create_token=self.job_create_token,
             approval_authority=self.approval_authority,
             kill_switch=self.kill_switch,
         )
@@ -286,10 +289,12 @@ class Controller:
         result: AgentResult = agent.run(execution_case, ctx)
         elapsed = round(time.time() - started, 3)
         if resolved is not None:
-            if self.kill_switch is not None and self.kill_switch.engaged():
+            if result.completed:
+                final_state = ExecutionState.VERIFIED
+            elif self.kill_switch is not None and self.kill_switch.engaged():
                 final_state = ExecutionState.KILLED
             else:
-                final_state = ExecutionState.VERIFIED if result.completed else ExecutionState.FAILED
+                final_state = ExecutionState.FAILED
             ctx.trace.emit(
                 TraceEventType.EXECUTION_STATE,
                 state=final_state.value,

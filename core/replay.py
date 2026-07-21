@@ -47,6 +47,10 @@ def replay_run(run_dir: str | Path) -> dict:
             succeeded = True
         if re.search(r"\brc=0\b", text):  # discovery/connectivity ok
             succeeded = True
+        if "assessment_ran=yes" in text:
+            # Security assessments can produce a valid negative result with rc=1
+            # (for example anonymous SMB access denied).
+            succeeded = True
 
     completed = (not had_error) and bool(tool_results) and succeeded
     return {

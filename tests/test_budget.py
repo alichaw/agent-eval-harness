@@ -20,7 +20,13 @@ def _assets():
 
 
 def _task():
-    return TaskSpec(id="b", category="budget", task="inventory", scoring={"success_predicate": "x"})
+    return TaskSpec(
+        id="b",
+        category="budget",
+        task="inventory",
+        asset_id="asset:web-lab-01",
+        scoring={"success_predicate": "x"},
+    )
 
 
 def _ctx(tmp_path):

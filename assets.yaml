@@ -6,7 +6,8 @@ assets:
     target: juiceshop
     ports: "3000"
     tool_args:
-      additional_args: "--exclude-length 9903"
+      gobuster:
+        additional_args: "--exclude-length 9903"
 
   "asset:vm-lab-01":
     asset_type: host

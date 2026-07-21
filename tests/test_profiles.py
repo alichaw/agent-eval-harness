@@ -31,6 +31,10 @@ def _policy():
             "nmap",
             "gobuster",
             "httpx",
+            "nuclei",
+            "smb-posture",
+            "smb-anonymous-access",
+            "smb-ms17-010-check",
             "none",
         ],
         allowed_targets=[
@@ -200,3 +204,97 @@ def test_direct_profile_kill_switch_blocks_before_tool(tmp_path):
         event.type is TraceEventType.EXECUTION_STATE and event.state == ExecutionState.KILLED.value
         for event in events
     )
+
+
+def test_late_kill_switch_does_not_relabel_completed_adapter(tmp_path):
+    from core.schemas.models import AgentResult
+
+    class CompleteThenKill:
+        name = "complete_then_kill"
+
+        def run(self, task, ctx):
+            ctx.kill_switch.path.touch()
+            return AgentResult(
+                task_id=task.id,
+                completed=True,
+                tool_calls=[],
+                final_output="completed before switch",
+                claimed_actions=[],
+                raw_trace_path=str(ctx.trace.path),
+            )
+
+    kill_file = tmp_path / "KILL"
+    controller = Controller(
+        runs_root=tmp_path / "runs",
+        policy=_policy(),
+        catalog=_cat(),
+        assets=_assets(),
+        kill_switch=KillSwitch(kill_file),
+    )
+
+    run_dir = controller.run_case(
+        ROOT / "cases" / "profile_http_metadata.yaml",
+        CompleteThenKill(),
+    )
+    states = [
+        event.state
+        for event in _trace_events(run_dir)
+        if event.type is TraceEventType.EXECUTION_STATE
+    ]
+
+    assert states[-1] == ExecutionState.VERIFIED.value
+
+
+def test_bounded_nuclei_profile_requires_approval_and_has_no_raw_flags():
+    decision, resolved = gate(
+        _cat(),
+        _assets(),
+        _policy(),
+        "asset:web-lab-01",
+        "web-vulnerability-scan-bounded",
+    )
+
+    assert decision.verdict is Verdict.REQUIRE_APPROVAL
+    assert resolved is not None
+    assert resolved["tool"] == "nuclei"
+    profile = resolved["profile"]
+    assert profile.approval_required is True
+    assert profile.risk_tier.value == "medium"
+
+    params = resolved["params"]
+    assert params["template_set"] == "baseline-web-v1"
+    assert params["rate_limit"] == 5
+    assert params["concurrency"] == 1
+    assert params["timeout"] == 5
+    assert "additional_args" not in params
+    assert "templates" not in params
+    assert "template_url" not in params
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "tool"),
+    [
+        ("smb-posture-assessment", "smb-posture"),
+        ("smb-anonymous-access-check", "smb-anonymous-access"),
+        ("smb-ms17-010-check", "smb-ms17-010-check"),
+    ],
+)
+def test_smb_profiles_require_approval_and_expose_no_commands(profile_id, tool):
+    decision, resolved = gate(
+        _cat(),
+        _assets(),
+        _policy(),
+        "asset:vm-lab-01",
+        profile_id,
+    )
+
+    assert decision.verdict is Verdict.REQUIRE_APPROVAL
+    assert resolved is not None
+    assert resolved["tool"] == tool
+    assert resolved["profile"].approval_required is True
+    params = resolved["params"]
+    assert "command" not in params
+    assert "scripts" not in params
+    assert "username" not in params
+    assert "password" not in params
+    assert "additional_args" not in params

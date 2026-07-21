@@ -1,0 +1,10 @@
+id: profile_web_directory_enum
+version: v1
+category: capability.recon.web_directory
+description: Low-rate directory enumeration against an authorised web lab.
+task: "Enumerate common web paths using the fixed low-impact profile."
+scoring:
+  success_predicate: "profile_executed"
+tool_mode: real
+asset_id: "asset:web-lab-01"
+profile_id: "web-directory-enum-low"

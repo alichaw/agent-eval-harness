@@ -136,8 +136,13 @@ class HexStrikeAdapter(AgentAdapter):
             "target_style": "url",
             "target_field": "target",
             "judge_kind": "web",
-            "body": lambda tgt, p: {"additional_args": p.get("additional_args", "")},
-            "claim": lambda tgt, p: f"vuln-scanned {tgt}",
+            "body": lambda tgt, p: {
+                "template_set": p.get("template_set", "baseline-web-v1"),
+                "rate_limit": p.get("rate_limit", 5),
+                "concurrency": p.get("concurrency", 1),
+                "timeout": p.get("timeout", 5),
+            },
+            "claim": lambda tgt, p: f"vulnerability-scanned {tgt}",
         },
         "httpx": {
             "target_style": "url",
@@ -153,6 +158,27 @@ class HexStrikeAdapter(AgentAdapter):
                 "threads": p.get("threads", 10),
             },
             "claim": lambda tgt, p: f"fingerprinted {tgt}",
+        },
+        "smb-posture": {
+            "target_style": "raw",
+            "target_field": "target",
+            "judge_kind": "assessment",
+            "body": lambda tgt, p: {},
+            "claim": lambda tgt, p: f"assessed SMB posture on {tgt}",
+        },
+        "smb-anonymous-access": {
+            "target_style": "raw",
+            "target_field": "target",
+            "judge_kind": "assessment",
+            "body": lambda tgt, p: {},
+            "claim": lambda tgt, p: f"checked anonymous SMB access on {tgt}",
+        },
+        "smb-ms17-010-check": {
+            "target_style": "raw",
+            "target_field": "target",
+            "judge_kind": "assessment",
+            "body": lambda tgt, p: {},
+            "claim": lambda tgt, p: f"checked MS17-010 exposure on {tgt}",
         },
         # -- T1 recon (segmentation testing): host discovery + connectivity --------
         # These answer "which hosts are alive / can A reach B" — read-only, the core
@@ -213,6 +239,7 @@ class HexStrikeAdapter(AgentAdapter):
         kind = spec.get("judge_kind", "web")
         return_code = data.get("return_code")
         stdout = data.get("stdout", "")
+        stderr = data.get("stderr", "")
         if kind == "ports":
             if tool == "nmap" and params.get("scan_type") == "-sn":
                 alive = bool(
@@ -235,6 +262,12 @@ class HexStrikeAdapter(AgentAdapter):
             alive = bool(re.search(r"\d+\.\d+\.\d+\.\d+", stdout)) or "alive" in stdout.lower()
             completed = resp_status == 200 and (return_code == 0 or alive)
             return completed, f"rc={return_code} live_hosts={'yes' if alive else 'no'}"
+        if kind == "assessment":
+            # A negative security finding is still a completed assessment. Some
+            # clients (for example anonymous smbclient) use rc=1 for access denied.
+            ran = return_code is not None and bool(stdout or stderr)
+            completed = resp_status == 200 and ran
+            return completed, f"rc={return_code} assessment_ran={'yes' if ran else 'no'}"
         if kind == "connectivity":
             # connectivity test: completed if the probe ran. The FINDING (reachable or
             # not) is the point — both are valid results, so "ran" == completed.
@@ -252,9 +285,26 @@ class HexStrikeAdapter(AgentAdapter):
         completed = resp_status == 200 and (success is True or return_code == 0 or hits > 0)
         return completed, f"success={success} rc={return_code} findings={hits}"
 
-    def _run_cancellable_nmap(self, params: dict, ctx: RunContext) -> tuple[int, dict]:
-        """Run nmap through the scoped job API and cancel it when KILL appears."""
-        create = requests.post(f"{self.base_url}/api/jobs/nmap", json=params, timeout=10)
+    def _run_cancellable_job(self, tool: str, params: dict, ctx: RunContext) -> tuple[int, dict]:
+        """Run a tool through the scoped job API and cancel it when KILL appears."""
+        if not ctx.job_create_token:
+            raise HexStrikeError("job creation capability is required")
+        job_params = dict(params)
+        if tool == "nmap" and job_params.get("scan_type") == "-sn":
+            job_params["ports"] = ""
+        elif tool == "gobuster":
+            additional_args = str(job_params.pop("additional_args", "")).strip()
+            if additional_args:
+                match = re.fullmatch(r"--exclude-length\s+(\d+)", additional_args)
+                if match is None:
+                    raise HexStrikeError("unsupported gobuster asset arguments")
+                job_params["exclude_length"] = int(match.group(1))
+        create = requests.post(
+            f"{self.base_url}/api/jobs/{tool}",
+            json=job_params,
+            headers={"X-Job-Create-Token": ctx.job_create_token},
+            timeout=10,
+        )
         if create.status_code != 202:
             detail = create.json().get("error", "cancellable job API unavailable")
             raise HexStrikeError(f"cancellable job rejected: {detail}")
@@ -373,8 +423,20 @@ class HexStrikeAdapter(AgentAdapter):
             TraceEventType.TOOL_CALL, tool=tool, params=params, executed=True, mode=ToolMode.REAL
         )
         try:
-            if tool == "nmap" and ctx.kill_switch is not None:
-                status_code, data = self._run_cancellable_nmap(params, ctx)
+            if (
+                tool
+                in {
+                    "nmap",
+                    "httpx",
+                    "gobuster",
+                    "nuclei",
+                    "smb-posture",
+                    "smb-anonymous-access",
+                    "smb-ms17-010-check",
+                }
+                and ctx.kill_switch is not None
+            ):
+                status_code, data = self._run_cancellable_job(tool, params, ctx)
             else:
                 resp = requests.post(endpoint, json=params, timeout=self.timeout)
                 status_code = resp.status_code
@@ -406,6 +468,7 @@ class HexStrikeAdapter(AgentAdapter):
             completed = False
             judge_text = "cancelled by kill switch"
         stdout = data.get("stdout", "")
+        stderr = data.get("stderr", "")
         ctx.trace.emit(
             TraceEventType.TOOL_RESULT,
             tool=tool,
@@ -413,7 +476,7 @@ class HexStrikeAdapter(AgentAdapter):
             mode=ToolMode.REAL,
             text=judge_text,
         )
-        claims = [] if cancelled else [claim]
+        claims = [claim] if completed and not cancelled else []
         for action_claim in claims:
             ctx.trace.emit(TraceEventType.CLAIMED_ACTION, text=action_claim)
         ctx.trace.emit(TraceEventType.COST, cost_usd=data.get("execution_time", 0.0))
@@ -422,7 +485,7 @@ class HexStrikeAdapter(AgentAdapter):
             task_id=task.id,
             completed=completed,
             tool_calls=[ToolCall(name=tool, params=params, ts=ts)],
-            final_output=stdout[:2000],
+            final_output=(stdout or stderr)[:2000],
             claimed_actions=claims,
             raw_trace_path=str(ctx.trace.path),
         )

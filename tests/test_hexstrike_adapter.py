@@ -205,6 +205,7 @@ def test_kill_switch_cancels_active_nmap_job(tmp_path, monkeypatch):
         if url.endswith("/api/cache/clear"):
             return _FakeResp({})
         if url.endswith("/api/jobs/nmap"):
+            assert kwargs["headers"]["X-Job-Create-Token"] == "create-secret"
             return _FakeResp(
                 {"job_id": "opaque-job", "job_token": "secret-capability"},
                 status=202,
@@ -220,6 +221,7 @@ def test_kill_switch_cancels_active_nmap_job(tmp_path, monkeypatch):
     monkeypatch.setattr("core.adapters.hexstrike.requests.delete", fake_delete)
     ctx = _ctx(tmp_path)
     ctx.kill_switch = KillSwitch(kill_file)
+    ctx.job_create_token = "create-secret"
 
     result = HexStrikeAdapter().run(_task(), ctx)
     states = [
@@ -254,6 +256,8 @@ def test_cancellable_nmap_job_completes_normally(tmp_path, monkeypatch):
     def fake_post(url, **kwargs):
         if url.endswith("/api/cache/clear"):
             return _FakeResp({})
+        assert kwargs["headers"]["X-Job-Create-Token"] == "create-secret"
+        assert kwargs["json"]["ports"] == ""
         return _FakeResp(
             {"job_id": "opaque-job", "job_token": "secret-capability"},
             status=202,
@@ -263,8 +267,284 @@ def test_cancellable_nmap_job_completes_normally(tmp_path, monkeypatch):
     monkeypatch.setattr("core.adapters.hexstrike.requests.post", fake_post)
     ctx = _ctx(tmp_path)
     ctx.kill_switch = KillSwitch(tmp_path / "KILL")
+    ctx.job_create_token = "create-secret"
 
-    result = HexStrikeAdapter().run(_task(), ctx)
+    result = HexStrikeAdapter().run(_task(scan_type="-sn", ports="22,80,443"), ctx)
 
     assert result.completed is True
     assert "secret-capability" not in (tmp_path / "trace.jsonl").read_text()
+
+
+def test_cancellable_job_requires_create_capability(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "core.adapters.hexstrike.requests.get",
+        lambda *args, **kwargs: _FakeResp({"status": "healthy"}),
+    )
+    monkeypatch.setattr(
+        "core.adapters.hexstrike.requests.post",
+        lambda *args, **kwargs: _FakeResp({}),
+    )
+    ctx = _ctx(tmp_path)
+    ctx.kill_switch = KillSwitch(tmp_path / "KILL")
+
+    result = HexStrikeAdapter().run(_task(), ctx)
+
+    assert result.completed is False
+    errors = [event for event in _events(tmp_path) if event.type is TraceEventType.ERROR]
+    assert errors
+    assert "creation capability is required" in errors[-1].text
+
+
+def test_cancellable_httpx_job_uses_structured_authenticated_request(tmp_path, monkeypatch):
+    def fake_get(url, **kwargs):
+        if url.endswith("/health"):
+            return _FakeResp({"status": "healthy"})
+        return _FakeResp(
+            {
+                "status": "succeeded",
+                "result": {
+                    "success": True,
+                    "return_code": 0,
+                    "stdout": "http://172.18.0.2:3000 [200]",
+                    "stderr": "",
+                },
+            }
+        )
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/api/cache/clear"):
+            return _FakeResp({})
+        assert url.endswith("/api/jobs/httpx")
+        assert kwargs["headers"]["X-Job-Create-Token"] == "create-secret"
+        assert kwargs["json"]["target"] == "http://172.18.0.2:3000"
+        assert kwargs["json"]["threads"] == 10
+        assert "additional_args" not in kwargs["json"]
+        return _FakeResp(
+            {"job_id": "opaque-job", "job_token": "secret-capability"},
+            status=202,
+        )
+
+    monkeypatch.setattr("core.adapters.hexstrike.requests.get", fake_get)
+    monkeypatch.setattr("core.adapters.hexstrike.requests.post", fake_post)
+    ctx = _ctx(tmp_path)
+    ctx.kill_switch = KillSwitch(tmp_path / "KILL")
+    ctx.job_create_token = "create-secret"
+
+    result = HexStrikeAdapter().run(
+        _task(
+            tool="httpx",
+            probe=True,
+            tech_detect=True,
+            status_code=True,
+            title=True,
+            web_server=True,
+            threads=10,
+        ),
+        ctx,
+    )
+
+    assert result.completed is True
+    trace_text = (tmp_path / "trace.jsonl").read_text()
+    assert "create-secret" not in trace_text
+    assert "secret-capability" not in trace_text
+
+
+def test_cancellable_gobuster_job_converts_only_safe_asset_argument(tmp_path, monkeypatch):
+    def fake_get(url, **kwargs):
+        if url.endswith("/health"):
+            return _FakeResp({"status": "healthy"})
+        return _FakeResp(
+            {
+                "status": "succeeded",
+                "result": {
+                    "success": True,
+                    "return_code": 0,
+                    "stdout": "/api (Status: 200)",
+                    "stderr": "",
+                },
+            }
+        )
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/api/cache/clear"):
+            return _FakeResp({})
+        assert url.endswith("/api/jobs/gobuster")
+        assert kwargs["headers"]["X-Job-Create-Token"] == "create-secret"
+        assert kwargs["json"] == {
+            "url": "http://172.18.0.2:3000",
+            "mode": "dir",
+            "wordlist": "/usr/share/wordlists/dirb/common.txt",
+            "exclude_length": 9903,
+        }
+        return _FakeResp(
+            {"job_id": "opaque-job", "job_token": "secret-capability"},
+            status=202,
+        )
+
+    monkeypatch.setattr("core.adapters.hexstrike.requests.get", fake_get)
+    monkeypatch.setattr("core.adapters.hexstrike.requests.post", fake_post)
+    ctx = _ctx(tmp_path)
+    ctx.kill_switch = KillSwitch(tmp_path / "KILL")
+    ctx.job_create_token = "create-secret"
+
+    result = HexStrikeAdapter().run(
+        _task(
+            tool="gobuster",
+            mode="dir",
+            wordlist="/usr/share/wordlists/dirb/common.txt",
+            additional_args="--exclude-length 9903",
+        ),
+        ctx,
+    )
+
+    assert result.completed is True
+    assert "secret-capability" not in (tmp_path / "trace.jsonl").read_text()
+
+
+def test_cancellable_gobuster_rejects_unstructured_asset_arguments(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "core.adapters.hexstrike.requests.get",
+        lambda *args, **kwargs: _FakeResp({"status": "healthy"}),
+    )
+    monkeypatch.setattr(
+        "core.adapters.hexstrike.requests.post",
+        lambda *args, **kwargs: _FakeResp({}),
+    )
+    ctx = _ctx(tmp_path)
+    ctx.kill_switch = KillSwitch(tmp_path / "KILL")
+    ctx.job_create_token = "create-secret"
+
+    result = HexStrikeAdapter().run(
+        _task(tool="gobuster", additional_args="--exclude-length 1; id"),
+        ctx,
+    )
+
+    assert result.completed is False
+    errors = [event.text for event in _events(tmp_path) if event.type is TraceEventType.ERROR]
+    assert any("unsupported gobuster asset arguments" in text for text in errors)
+
+
+def test_cancellable_nuclei_job_uses_only_bounded_structured_fields(tmp_path, monkeypatch):
+    def fake_get(url, **kwargs):
+        if url.endswith("/health"):
+            return _FakeResp({"status": "healthy"})
+        return _FakeResp(
+            {
+                "status": "succeeded",
+                "result": {
+                    "success": False,
+                    "return_code": 1,
+                    "stdout": "",
+                    "stderr": "template configuration unavailable",
+                },
+            }
+        )
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/api/cache/clear"):
+            return _FakeResp({})
+        assert url.endswith("/api/jobs/nuclei")
+        assert kwargs["headers"]["X-Job-Create-Token"] == "create-secret"
+        assert kwargs["json"] == {
+            "target": "http://172.18.0.2:3000",
+            "template_set": "baseline-web-v1",
+            "rate_limit": 5,
+            "concurrency": 1,
+            "timeout": 5,
+        }
+        return _FakeResp(
+            {"job_id": "opaque-job", "job_token": "secret-capability"},
+            status=202,
+        )
+
+    monkeypatch.setattr("core.adapters.hexstrike.requests.get", fake_get)
+    monkeypatch.setattr("core.adapters.hexstrike.requests.post", fake_post)
+    ctx = _ctx(tmp_path)
+    ctx.kill_switch = KillSwitch(tmp_path / "KILL")
+    ctx.job_create_token = "create-secret"
+
+    result = HexStrikeAdapter().run(
+        _task(
+            tool="nuclei",
+            template_set="baseline-web-v1",
+            rate_limit=5,
+            concurrency=1,
+            timeout=5,
+        ),
+        ctx,
+    )
+
+    assert result.completed is False
+    assert result.final_output == "template configuration unavailable"
+    assert result.claimed_actions == []
+    trace_text = (tmp_path / "trace.jsonl").read_text()
+    assert "create-secret" not in trace_text
+    assert "secret-capability" not in trace_text
+    assert "additional_args" not in trace_text
+
+
+@pytest.mark.parametrize(
+    ("tool", "endpoint"),
+    [
+        ("smb-posture", "/api/jobs/smb-posture"),
+        ("smb-anonymous-access", "/api/jobs/smb-anonymous-access"),
+        ("smb-ms17-010-check", "/api/jobs/smb-ms17-010-check"),
+    ],
+)
+def test_cancellable_smb_jobs_send_only_the_authorised_target(
+    tool, endpoint, tmp_path, monkeypatch
+):
+    def fake_get(url, **kwargs):
+        if url.endswith("/health"):
+            return _FakeResp({"status": "healthy"})
+        return _FakeResp(
+            {
+                "status": "succeeded",
+                "result": {
+                    "success": True,
+                    "return_code": 0,
+                    "stdout": "SMB assessment completed",
+                    "stderr": "",
+                },
+            }
+        )
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/api/cache/clear"):
+            return _FakeResp({})
+        assert url.endswith(endpoint)
+        assert kwargs["headers"]["X-Job-Create-Token"] == "create-secret"
+        assert kwargs["json"] == {"target": "172.18.0.2"}
+        return _FakeResp(
+            {"job_id": "opaque-job", "job_token": "secret-capability"},
+            status=202,
+        )
+
+    monkeypatch.setattr("core.adapters.hexstrike.requests.get", fake_get)
+    monkeypatch.setattr("core.adapters.hexstrike.requests.post", fake_post)
+    ctx = _ctx(tmp_path)
+    ctx.kill_switch = KillSwitch(tmp_path / "KILL")
+    ctx.job_create_token = "create-secret"
+
+    result = HexStrikeAdapter().run(_task(tool=tool), ctx)
+
+    assert result.completed is True
+    trace_text = (tmp_path / "trace.jsonl").read_text()
+    assert "create-secret" not in trace_text
+    assert "secret-capability" not in trace_text
+
+
+def test_negative_smb_assessment_is_still_a_completed_result():
+    adapter = HexStrikeAdapter()
+    completed, summary = adapter._judge(
+        "smb-anonymous-access",
+        200,
+        {
+            "return_code": 1,
+            "stdout": "",
+            "stderr": "NT_STATUS_ACCESS_DENIED",
+        },
+    )
+
+    assert completed is True
+    assert "assessment_ran=yes" in summary

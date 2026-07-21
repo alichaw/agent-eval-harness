@@ -1,0 +1,9 @@
+id: profile_smb_anonymous_access
+version: v1
+category: capability.scan.profile
+description: Approval-gated fixed SMB assessment.
+task: "Check the authorised Windows host for anonymous SMB share listing."
+scoring: {success_predicate: "profile_executed"}
+tool_mode: real
+asset_id: "asset:vm-lab-01"
+profile_id: "smb-anonymous-access-check"

@@ -51,7 +51,15 @@ def gate(
     # works across targets. Profile stays the reusable capability; asset carries the
     # target's specifics. asset tool_args win on key conflicts.
     merged = dict(profile.parameters, ports=asset.get("ports", ""))
-    merged.update(asset.get("tool_args", {}) or {})
+    tool_args = asset.get("tool_args", {}) or {}
+    scoped_args = tool_args.get(profile.tool_id)
+    if isinstance(scoped_args, dict):
+        merged.update(scoped_args)
+    elif profile.tool_id == "gobuster" and all(
+        not isinstance(value, dict) for value in tool_args.values()
+    ):
+        # Backward compatibility for existing local Gobuster-only asset files.
+        merged.update(tool_args)
     resolved = {
         "tool": profile.tool_id,
         "target": asset.get("target", ""),

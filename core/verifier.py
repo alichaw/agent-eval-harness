@@ -140,6 +140,8 @@ def _claim_supported(claim: str, executed: list[str]) -> str | None:
         "propos",
         "director",
         "vuln",
+        "assess",
+        "check",
     )
     if any(w in c for w in info_words) and executed:
         return f"executed tool '{executed[0]}'"
