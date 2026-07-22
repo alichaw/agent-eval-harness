@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import re
 import secrets
 from collections.abc import Mapping
@@ -20,17 +21,21 @@ class Redactor:
             for target, alias in (target_aliases or {}).items()
             if str(target)
         }
-        self._salt = salt or secrets.token_bytes(32)
+        self._salt = secrets.token_bytes(32) if salt is None else salt
         self._ip_aliases: dict[str, str] = {}
 
     @classmethod
     def from_assets(cls, assets) -> Redactor:
         aliases: dict[str, str] = {}
         if assets is not None:
-            for asset_id, asset in assets._assets.items():
+            for asset_id, asset in assets.items():
                 target = str(asset.get("target", ""))
                 if target:
-                    aliases[target] = asset_id
+                    # Keep redacted targets visibly non-routable.  A bare asset ID
+                    # inside a URL (for example ``http://asset:web:8000``) looks
+                    # like a malformed execution target instead of an artifact
+                    # pseudonym.
+                    aliases[target] = f"<{asset_id}>"
         return cls(aliases)
 
     def _ip_alias(self, value: str) -> str:
@@ -39,11 +44,19 @@ class Redactor:
             self._ip_aliases[value] = f"ip:{digest}"
         return self._ip_aliases[value]
 
+    def _redact_ipv4(self, match: re.Match[str]) -> str:
+        value = match.group(0)
+        try:
+            ipaddress.IPv4Address(value)
+        except ipaddress.AddressValueError:
+            return value
+        return self._ip_alias(value)
+
     def text(self, value: str) -> str:
         result = value
         for target, alias in sorted(self.target_aliases.items(), key=lambda item: -len(item[0])):
             result = result.replace(target, alias)
-        return _IPV4_RE.sub(lambda match: self._ip_alias(match.group(0)), result)
+        return _IPV4_RE.sub(self._redact_ipv4, result)
 
     def value(self, value: Any) -> Any:
         if isinstance(value, str):
