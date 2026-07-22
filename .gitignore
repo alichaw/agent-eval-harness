@@ -9,3 +9,5 @@ config/local/
 
 .secrets/
 *.token
+*:Zone.Identifier
+*.patch
