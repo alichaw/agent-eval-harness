@@ -6,3 +6,6 @@ runs/
 *.log
 runs_test/
 config/local/
+
+.secrets/
+*.token
