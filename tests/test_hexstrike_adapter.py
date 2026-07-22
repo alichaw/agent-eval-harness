@@ -293,6 +293,10 @@ def test_cancellable_job_requires_create_capability(tmp_path, monkeypatch):
     errors = [event for event in _events(tmp_path) if event.type is TraceEventType.ERROR]
     assert errors
     assert "creation capability is required" in errors[-1].text
+    calls = [event for event in _events(tmp_path) if event.type is TraceEventType.TOOL_CALL]
+    assert len(calls) == 1
+    assert calls[0].executed is False
+    assert calls[0].text == "requested"
 
 
 def test_cancellable_httpx_job_uses_structured_authenticated_request(tmp_path, monkeypatch):
@@ -347,6 +351,12 @@ def test_cancellable_httpx_job_uses_structured_authenticated_request(tmp_path, m
     trace_text = (tmp_path / "trace.jsonl").read_text()
     assert "create-secret" not in trace_text
     assert "secret-capability" not in trace_text
+    calls = [event for event in _events(tmp_path) if event.type is TraceEventType.TOOL_CALL]
+    assert [event.executed for event in calls] == [False, True]
+    states = [
+        event.state for event in _events(tmp_path) if event.type is TraceEventType.EXECUTION_STATE
+    ]
+    assert "job_created" in states
 
 
 def test_cancellable_gobuster_job_converts_only_safe_asset_argument(tmp_path, monkeypatch):

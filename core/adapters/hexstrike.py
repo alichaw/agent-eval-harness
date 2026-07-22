@@ -314,6 +314,22 @@ class HexStrikeAdapter(AgentAdapter):
         job_token = created.get("job_token", "")
         if not job_id or not job_token:
             raise HexStrikeError("cancellable job response missing capability")
+        # A requested call is not evidence of execution.  Only mark it executed
+        # after the sandbox has accepted the request and returned an opaque job
+        # capability.  This keeps rejected authentication/allowlist requests out
+        # of the verifier's executed-action evidence.
+        ctx.trace.emit(
+            TraceEventType.TOOL_CALL,
+            tool=tool,
+            params=params,
+            executed=True,
+            mode=ToolMode.REAL,
+        )
+        ctx.trace.emit(
+            TraceEventType.EXECUTION_STATE,
+            state="job_created",
+            text=f"{tool} sandbox job accepted",
+        )
         headers = {"X-Job-Token": job_token}
         job_url = f"{self.base_url}/api/jobs/{job_id}"
         deadline = time.monotonic() + self.timeout
@@ -420,7 +436,12 @@ class HexStrikeAdapter(AgentAdapter):
 
         ts = time.time()
         ctx.trace.emit(
-            TraceEventType.TOOL_CALL, tool=tool, params=params, executed=True, mode=ToolMode.REAL
+            TraceEventType.TOOL_CALL,
+            tool=tool,
+            params=params,
+            executed=False,
+            mode=ToolMode.REAL,
+            text="requested",
         )
         try:
             if (
@@ -441,6 +462,13 @@ class HexStrikeAdapter(AgentAdapter):
                 resp = requests.post(endpoint, json=params, timeout=self.timeout)
                 status_code = resp.status_code
                 data = resp.json()
+                ctx.trace.emit(
+                    TraceEventType.TOOL_CALL,
+                    tool=tool,
+                    params=params,
+                    executed=True,
+                    mode=ToolMode.REAL,
+                )
         except (requests.RequestException, HexStrikeError) as e:
             ctx.trace.emit(TraceEventType.ERROR, error_class="request_failed", text=str(e))
             return AgentResult(
