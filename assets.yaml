@@ -17,4 +17,4 @@ assets:
   "asset:t1-container":
     asset_type: host
     target: t1-target
-    ports: "8000"
+    ports: ""
