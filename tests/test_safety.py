@@ -90,6 +90,55 @@ def test_expired_approval_is_rejected(tmp_path, monkeypatch):
         authority.verify_and_consume(token, "asset:test", profile.profile_id, fingerprint)
 
 
+def test_delayed_approval_is_rejected_before_cooling_off_elapses(tmp_path, monkeypatch):
+    profile = _profile(tmp_path)
+    fingerprint = profile_fingerprint(profile)
+    authority = ApprovalAuthority(b"x" * 32, tmp_path / "spent")
+    start = 1_700_000_000
+    monkeypatch.setattr(time, "time", lambda: start)
+    token = authority.issue(
+        "asset:test", profile.profile_id, fingerprint, ttl_seconds=300, delay_seconds=900
+    )
+
+    monkeypatch.setattr(time, "time", lambda: start + 1)
+    with pytest.raises(ApprovalError, match="not active yet"):
+        authority.verify_and_consume(token, "asset:test", profile.profile_id, fingerprint)
+
+    monkeypatch.setattr(time, "time", lambda: start + 899)
+    with pytest.raises(ApprovalError, match="not active yet"):
+        authority.verify_and_consume(token, "asset:test", profile.profile_id, fingerprint)
+
+
+def test_delayed_approval_is_usable_once_cooling_off_elapses(tmp_path, monkeypatch):
+    profile = _profile(tmp_path)
+    fingerprint = profile_fingerprint(profile)
+    authority = ApprovalAuthority(b"x" * 32, tmp_path / "spent")
+    start = 1_700_000_000
+    monkeypatch.setattr(time, "time", lambda: start)
+    token = authority.issue(
+        "asset:test", profile.profile_id, fingerprint, ttl_seconds=300, delay_seconds=900
+    )
+
+    monkeypatch.setattr(time, "time", lambda: start + 900)
+    claims = authority.verify_and_consume(token, "asset:test", profile.profile_id, fingerprint)
+    assert claims.asset_id == "asset:test"
+
+def test_delayed_approval_still_expires_after_its_post_delay_window(tmp_path, monkeypatch):
+    profile = _profile(tmp_path)
+    fingerprint = profile_fingerprint(profile)
+    authority = ApprovalAuthority(b"x" * 32, tmp_path / "spent")
+    start = 1_700_000_000
+    monkeypatch.setattr(time, "time", lambda: start)
+    token = authority.issue(
+        "asset:test", profile.profile_id, fingerprint, ttl_seconds=300, delay_seconds=900
+    )
+
+    # not_before (start+900) + ttl_seconds (300) = usable window closes at start+1200
+    monkeypatch.setattr(time, "time", lambda: start + 1200)
+    with pytest.raises(ApprovalError, match="expired"):
+        authority.verify_and_consume(token, "asset:test", profile.profile_id, fingerprint)
+
+
 def test_kill_switch_is_file_backed(tmp_path):
     switch = KillSwitch(tmp_path / "STOP")
     assert switch.engaged() is False

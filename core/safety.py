@@ -35,6 +35,7 @@ class ApprovalClaims:
     asset_id: str
     profile_id: str
     profile_hash: str
+    not_before: int
     expires_at: int
     nonce: str
 
@@ -81,14 +82,24 @@ class ApprovalAuthority:
         profile_id: str,
         profile_hash: str,
         ttl_seconds: int = 300,
+        delay_seconds: int = 0,
     ) -> str:
         if not 1 <= ttl_seconds <= 3600:
             raise ApprovalError("approval TTL must be between 1 and 3600 seconds")
+        # Cooling-off window: the approval exists from the moment it's issued (so it's
+        # already logged/auditable) but cannot be CONSUMED until not_before. This is a
+        # single-operator substitute for two-person review — it forces a mandatory gap
+        # between "I decided to do this" and "this can actually run", so an approval
+        # can't be minted and used in the same breath under in-the-moment pressure.
+        if not 0 <= delay_seconds <= 86_400:
+            raise ApprovalError("approval delay must be between 0 and 86400 seconds")
+        not_before = int(time.time()) + delay_seconds
         claims = ApprovalClaims(
             asset_id=asset_id,
             profile_id=profile_id,
             profile_hash=profile_hash,
-            expires_at=int(time.time()) + ttl_seconds,
+            not_before=not_before,
+            expires_at=not_before + ttl_seconds,
             nonce=secrets.token_urlsafe(24),
         )
         payload = json.dumps(asdict(claims), sort_keys=True, separators=(",", ":")).encode()
@@ -118,7 +129,13 @@ class ApprovalAuthority:
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise ApprovalError("invalid approval claims") from exc
 
-        if int(time.time()) >= claims.expires_at:
+        now = int(time.time())
+        if now < claims.not_before:
+            raise ApprovalError(
+                f"approval not active yet — usable in {claims.not_before - now}s "
+                f"(cooling-off period, not_before={claims.not_before})"
+            )
+        if now >= claims.expires_at:
             raise ApprovalError("approval expired")
         if claims.asset_id != asset_id or claims.profile_id != profile_id:
             raise ApprovalError("approval does not match asset/profile")

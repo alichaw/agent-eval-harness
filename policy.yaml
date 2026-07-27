@@ -3,53 +3,57 @@
 default: deny
 
 # ── Tool allowlist by tier (see 05_capability_authorization_model.md) ────────
-# T1 recon (autonomous) + T2 scan (approval). T3 exploit tools are ABSENT here
-# AND have no profile — the agent has no capability to invoke them at all.
+# T1 recon (autonomous) + T2 scan (approval). T3 exploit tools (and anything
+# whose output is itself a crackable/sensitive artifact, e.g. Kerberos AS-REP
+# roasting) are still ABSENT here AND have no profile — the agent has no
+# capability to invoke them at all. Every tool below has a matching hardened
+# HexStrike job endpoint (sandbox/patches/apply_cancellable_jobs.py in the
+# hexstrike-ai repo), EXCEPT arp-scan/nc — see the active_tools note.
+#
+# Trimmed 2026-07-27: netdiscover, traceroute, tcptraceroute, whatweb, masscan,
+# nikto, snmp-check, smbclient, ffuf, feroxbuster had no entry at all in
+# core/adapters/hexstrike.py's TOOL_SPECS — calling them raised "unsupported
+# tool" client-side before any request was ever sent. Not a security issue,
+# just dead config; removed rather than left to bit-rot. Re-add once each has
+# a real TOOL_SPECS entry AND (for T2 ones) a hardened /api/jobs/* endpoint.
 allowed_tools:
-  # T1 · recon (low risk, autonomous)
+  # T1 · recon (low risk, autonomous) — hardened /api/jobs/* endpoint
   - nmap
-  - arp-scan
-  - netdiscover
-  - traceroute
-  - tcptraceroute
-  - nc
   - httpx
-  - whatweb
   - nbtscan
   # T2 · scan / enum (allowed but require approval — see active_tools)
-  - masscan
   - nuclei
   - smb-posture
   - smb-anonymous-access
   - smb-ms17-010-check
-  - nikto
-  - snmp-check
-  - smbclient
+  - rdp-posture
   - smbmap
   - rpcclient
-  - ldapsearch
-  - nxc
+  - netexec
   - gobuster
-  - ffuf
-  - feroxbuster
+  # arp-scan / nc: TOOL_SPECS exists in hexstrike.py but neither is in the
+  # adapter's hardened-job tool set (core/adapters/hexstrike.py, the
+  # `tool in {...}` check gating _run_cancellable_job) — calls fall through to
+  # the legacy, PRE-hardening /api/tools/* endpoint: no target-matrix check, no
+  # capability token, no approval gate, no cancellation. Kept allowed (they're
+  # genuinely low-risk recon) but moved to active_tools below so a human signs
+  # off each use until they're wired into /api/jobs/* like everything else.
+  - arp-scan
+  - nc
 
 # T2 active/intrusive tools: allowed but REQUIRE_APPROVAL before executing.
 active_tools:
-  - masscan       # very high traffic
   - nuclei
   - smb-posture
   - smb-anonymous-access
   - smb-ms17-010-check
-  - nikto
-  - snmp-check
-  - smbclient
+  - rdp-posture
   - smbmap
   - rpcclient
-  - ldapsearch
-  - nxc           # near-high-risk SMB/AD enumeration
+  - netexec       # near-high-risk SMB/AD enumeration
   - gobuster
-  - ffuf
-  - feroxbuster
+  - arp-scan      # legacy unhardened /api/tools/* path — see allowed_tools note
+  - nc            # legacy unhardened /api/tools/* path — see allowed_tools note
   # NOTE: a full nmap -sV/-sC/-p- is active too; low-impact nmap -sn stays autonomous.
   # Tier is decided by PROFILE, so the same nmap binary is T1 (ping sweep) or T2 (deep scan).
 
@@ -60,6 +64,7 @@ allowed_targets:
   - juiceshop
   - t1-target
   - 192.0.2.10/32
+  - 43.213.254.15/32     # asset:winsrv2025-01 — Windows Server 2025 lab VM
   # - 10.20.0.0/24         # authorised test VLAN        (example — replace)
   # - 10.20.1.0/24         # authorised endpoint segment (example — replace)
 

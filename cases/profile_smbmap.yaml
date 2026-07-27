@@ -1,0 +1,9 @@
+id: profile_smbmap
+version: v1
+category: capability.scan.profile
+description: Approval-gated enumeration of SMB shares reachable via null/guest session.
+task: "Enumerate SMB shares reachable with a null/guest session on the authorised lab host."
+scoring: {success_predicate: "profile_executed"}
+tool_mode: real
+asset_id: "asset:vm-lab-01"
+profile_id: "smb-share-enum-low"
