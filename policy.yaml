@@ -3,10 +3,13 @@
 default: deny
 
 # ── Tool allowlist by tier (see 05_capability_authorization_model.md) ────────
-# T1 recon (autonomous) + T2 scan (approval). T3 exploit tools (and anything
-# whose output is itself a crackable/sensitive artifact, e.g. Kerberos AS-REP
-# roasting) are still ABSENT here AND have no profile — the agent has no
-# capability to invoke them at all. Every tool below has a matching hardened
+# T1 recon (autonomous) + T2 scan (approval) are enforced below via
+# allowed_tools/active_tools. T3 (access/lateral movement) is now WRITTEN as
+# t3_low/t3_high near the end of this file, but core/policy.py does not read
+# those keys yet and no T3 tool has a profile or hardened
+# endpoint — the agent still has no actual capability to invoke any of them.
+# Writing the scope down is step one of a real change process, not a grant.
+# Every T1/T2 tool below has a matching hardened
 # HexStrike job endpoint (sandbox/patches/apply_cancellable_jobs.py in the
 # hexstrike-ai repo), EXCEPT arp-scan/nc — see the active_tools note.
 #
@@ -89,3 +92,92 @@ deny_flags:
     - "--dump"
     - "--os-shell"
     - "--os-pwn"
+
+# ══════════════════════════════════════════════════════════════════════════
+# T3 — access / lateral movement (WRITTEN SCOPE ONLY — 2026-07-27 draft)
+#
+# NOT enforced by core/policy.py: Policy.from_yaml() only reads allowed_tools/
+# allowed_targets/active_tools/denied_targets/max_cost_usd/deny_flags. These
+# two lists are inert until someone (a) adds gate logic for them, AND
+# (b) each tool gets a real hardened /api/jobs/* endpoint + TOOL_SPECS entry +
+# profile, the same way the T1/T2 tools above did. Until then the agent has
+# NO CAPABILITY to invoke anything listed here, same as before this section
+# existed — writing it down is the first step of the change process, not the
+# last.
+#
+# Both tiers require a time-delayed approval (core/safety.py issue(...,
+# delay_seconds=...)) — the approval exists/is logged the moment it's minted,
+# but cannot be consumed until the cooling-off window elapses. This is the
+# single-operator substitute for two-person review: it forces a gap between
+# deciding to act and being able to act.
+#
+# Credential handling (applies to every tool below): never in a case file,
+# CLI argument, or chat/log text. Store as an independent 0600 file (same
+# pattern as config/local/job-create.token); an approval references WHICH
+# credential set to use, never the plaintext. Any tool output containing a
+# credential, hash, or ticket must be redacted before it reaches trace.jsonl
+# or runs/ (core/redaction.py) — see T3-High.
+# ══════════════════════════════════════════════════════════════════════════
+
+# T3-Low: establish a channel through an already-authorised host + enumerate.
+# No credential material is EXTRACTED at this tier (only used to open a
+# session) and no target outside allowed_targets is ever touched, even if
+# reachable through the tunnel -- a host found via pivot must be added to
+# allowed_targets before anything may target it.
+t3_low:
+  tools:
+    - ssh-port-forward     # `ssh -L`/`-D` — the tunnel itself
+    - chisel
+    - ligolo-ng
+    - proxychains
+    - powerview            # local/AD enumeration via PowerShell
+    - powerup
+    - seatbelt
+    - winpeas
+    - bloodhound
+    - sharphound
+    - netexec-authenticated # netexec with real creds, distinct from the
+                            # existing null-session netexec profile
+  approval:
+    delay_seconds_min: 900   # 15 min cooling-off, minimum
+  evidence_required:
+    - tool_invocation_log
+    - target_access_log
+    - network_flow_log
+    - credential_reference_log   # WHICH credential set was used, never the value
+
+# T3-High: credential extraction / lateral movement / password guessing.
+# Output at this tier is itself the sensitive artifact (plaintext passwords,
+# Kerberos tickets, NTLM hashes) -- redaction is not optional, and every use
+# needs a human-written justification, not just a token.
+t3_high:
+  tools:
+    - impacket-secretsdump
+    - impacket-wmiexec
+    - impacket-psexec
+    - impacket-smbexec
+    - mimikatz
+    - rubeus
+    - evil-winrm
+    - hydra
+    - medusa
+    - patator
+    # responder: LLMNR/NBT-NS poisoning. NOT a single-target tool -- it answers
+    # broadcast traffic from ANY host on the local segment, so the "one /32
+    # target" model this whole policy is built on does not apply to it. Needs
+    # its own scoping primitive (which broadcast domain/VLAN, not which host)
+    # before it can even be expressed here correctly. Listed for visibility;
+    # treat as blocked until that's designed, not just approval-gated.
+    - responder
+  approval:
+    delay_seconds_min: 3600   # 1 hour cooling-off, minimum
+  output_handling:
+    redact_before_trace: true      # credentials/hashes/tickets never hit trace.jsonl or runs/ in the clear
+    storage: "separate encrypted-at-rest location, not runs/"
+    retention: "explicit deletion policy required before first use"
+  evidence_required:
+    - tool_invocation_log
+    - target_access_log
+    - network_flow_log
+    - credential_reference_log
+    - written_justification   # human-authored, not a token: what/why for this specific use
