@@ -35,10 +35,18 @@ profiles:
     description: Limited TCP service inventory for an authorised lab asset.
     interaction_mode: active
     risk_tier: medium
-    allowed_asset_types: [web_lab]
+    allowed_asset_types:
+      - web_lab
+      - vulnerable_lab
     tool_id: nmap
-    parameters: {scan_type: "-sV", port_set: "common_small"}
-    limits: {max_ports: 20, max_tool_calls: 1, max_duration_seconds: 60, max_requests_per_second: 5}
+    parameters:
+      scan_type: "-sV"
+      port_set: "common_small"
+    limits:
+      max_ports: 20
+      max_tool_calls: 1
+      max_duration_seconds: 60
+      max_requests_per_second: 5
     internet_egress: false
     approval_required: true
     evidence_required:
@@ -121,6 +129,20 @@ profiles:
     tool_id: arp-scan
     parameters: {additional_args: "--localnet"}
     limits: {max_tool_calls: 1, max_duration_seconds: 60, max_requests_per_second: 50}
+    internet_egress: false
+    approval_required: false
+    evidence_required: [tool_invocation_log, target_access_log]
+
+  # NetBIOS name scan — reveals workgroup/domain name and machine role on the
+  # local segment, read-only. Uses the hardened /api/jobs/nbtscan endpoint.
+  netbios-name-scan:
+    description: Discover NetBIOS names, workgroup/domain, and machine role for an authorised host.
+    interaction_mode: active
+    risk_tier: low
+    allowed_asset_types: [network_segment, host]
+    tool_id: nbtscan
+    parameters: {}
+    limits: {max_tool_calls: 1, max_duration_seconds: 60, max_requests_per_second: 20}
     internet_egress: false
     approval_required: false
     evidence_required: [tool_invocation_log, target_access_log]
@@ -234,3 +256,66 @@ profiles:
     internet_egress: false
     approval_required: true
     evidence_required: [tool_invocation_log, target_access_log, network_flow_log]
+
+  rdp-posture-assessment:
+    description: Assess exposed RDP security posture — encryption/NLA and a known-CVE detection script (rdp-vuln-ms12-020). Detection only, no exploitation attempted.
+    interaction_mode: active
+    risk_tier: medium
+    allowed_asset_types: [host]
+    tool_id: rdp-posture
+    parameters: {}
+    limits: {max_targets: 1, max_ports: 1, max_tool_calls: 1, max_duration_seconds: 90, max_requests_per_second: 2, max_retries: 0}
+    internet_egress: false
+    approval_required: true
+    evidence_required: [tool_invocation_log, target_access_log, network_flow_log]
+
+  # ══ T2 Windows / Active Directory posture (approval-gated, structured only) ══
+  # Every tool_id below matches a hardened HexStrike /api/jobs/* endpoint
+  # (hexstrike-ai sandbox/patches/apply_cancellable_jobs.py v13) — argv-list
+  # subprocess, no shell, fixed param allowlist server-side too. The model
+  # picks {asset_id, profile_id} and nothing else — no arbitrary RPC command,
+  # no free-form netexec flags, no credentials (all three use a null/guest
+  # session; no username/password/hash field exists on any of these profiles).
+  smb-share-enum-low:
+    description: Enumerate SMB shares reachable with a null/guest session on an authorised host.
+    interaction_mode: active
+    risk_tier: medium
+    allowed_asset_types: [host, domain_controller]
+    tool_id: smbmap
+    parameters: {}
+    limits: {max_targets: 1, max_ports: 1, max_tool_calls: 1, max_duration_seconds: 60, max_requests_per_second: 2, max_retries: 0}
+    internet_egress: false
+    approval_required: true
+    evidence_required: [tool_invocation_log, target_access_log, network_flow_log]
+
+  smb-user-enum-rid-low:
+    description: Enumerate domain users/groups via RID cycling over a null SMB/RPC session on an authorised host.
+    interaction_mode: active
+    risk_tier: medium
+    allowed_asset_types: [host, domain_controller]
+    tool_id: rpcclient
+    parameters: {commands: ["enumdomusers", "enumdomgroups"]}
+    limits: {max_targets: 1, max_ports: 1, max_tool_calls: 1, max_duration_seconds: 60, max_requests_per_second: 2, max_retries: 0}
+    internet_egress: false
+    approval_required: true
+    evidence_required: [tool_invocation_log, target_access_log, network_flow_log]
+
+  ad-null-session-posture:
+    description: Assess AD posture over a null SMB session — shares, password policy, local admin group membership.
+    interaction_mode: active
+    risk_tier: medium
+    allowed_asset_types: [host, domain_controller]
+    tool_id: netexec
+    parameters: {checks: ["shares", "pass-policy", "local-groups"]}
+    limits: {max_targets: 1, max_ports: 1, max_tool_calls: 1, max_duration_seconds: 90, max_requests_per_second: 2, max_retries: 0}
+    internet_egress: false
+    approval_required: true
+    evidence_required: [tool_invocation_log, target_access_log, network_flow_log]
+
+  # NOTE: LDAP anonymous-bind enumeration and Kerberos AS-REP roasting detection
+  # (T3) were dropped from this file on 2026-07-24 — neither has a real HexStrike
+  # endpoint (verified against hexstrike_server.py), so profiles pointing at
+  # "ldapsearch" / "kerberos-asrep-roast-check" would 404 in production. Re-add
+  # once a real backing endpoint exists (either a new hardened /api/jobs/* route,
+  # or reusing netexec's ldap protocol — see hexstrike.py's netexec TOOL_SPECS
+  # comment for why --asreproast needs its own review before wiring up).

@@ -180,6 +180,13 @@ class HexStrikeAdapter(AgentAdapter):
             "body": lambda tgt, p: {},
             "claim": lambda tgt, p: f"checked MS17-010 exposure on {tgt}",
         },
+        "rdp-posture": {
+            "target_style": "raw",
+            "target_field": "target",
+            "judge_kind": "assessment",
+            "body": lambda tgt, p: {},
+            "claim": lambda tgt, p: f"assessed RDP security posture on {tgt}",
+        },
         # -- T1 recon (segmentation testing): host discovery + connectivity --------
         # These answer "which hosts are alive / can A reach B" — read-only, the core
         # of isolation testing. NOTE: confirm each HexStrike endpoint's real param
@@ -200,6 +207,44 @@ class HexStrikeAdapter(AgentAdapter):
                 "additional_args": p.get("additional_args", "-z -v -w 3"),
             },
             "claim": lambda tgt, p: f"connectivity-tested {tgt}:{p.get('ports', '')}",
+        },
+        # -- T2 Windows/AD enumeration ------------------------------------------
+        # Verified against hexstrike-ai's hardened /api/jobs/* handlers (sandbox/
+        # patches/apply_cancellable_jobs.py v13). These four also exist as legacy
+        # /api/tools/* endpoints (shell=True, f-string command building) for the
+        # non-cancellable path — bodies below are kept to the same fixed fields
+        # either way, so no free-form flag ever reaches either variant.
+        "smbmap": {
+            "target_style": "raw",
+            "target_field": "target",
+            "judge_kind": "assessment",
+            "body": lambda tgt, p: {},
+            "claim": lambda tgt, p: f"enumerated SMB shares on {tgt}",
+        },
+        "rpcclient": {
+            "target_style": "raw",
+            "target_field": "target",
+            "judge_kind": "assessment",
+            "body": lambda tgt, p: {
+                "commands": p.get("commands", ["enumdomusers", "enumdomgroups"]),
+            },
+            "claim": lambda tgt, p: f"enumerated domain users/groups via RID cycling on {tgt}",
+        },
+        "nbtscan": {
+            "target_style": "raw",
+            "target_field": "target",
+            "judge_kind": "assessment",
+            "body": lambda tgt, p: {},
+            "claim": lambda tgt, p: f"NetBIOS-scanned {tgt}",
+        },
+        "netexec": {
+            "target_style": "raw",
+            "target_field": "target",
+            "judge_kind": "assessment",
+            "body": lambda tgt, p: {
+                "checks": p.get("checks", ["shares", "pass-policy", "local-groups"]),
+            },
+            "claim": lambda tgt, p: f"assessed AD null-session posture on {tgt}",
         },
     }
 
@@ -454,6 +499,11 @@ class HexStrikeAdapter(AgentAdapter):
                     "smb-posture",
                     "smb-anonymous-access",
                     "smb-ms17-010-check",
+                    "rdp-posture",
+                    "rpcclient",
+                    "smbmap",
+                    "nbtscan",
+                    "netexec",
                 }
                 and ctx.kill_switch is not None
             ):

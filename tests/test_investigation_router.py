@@ -2,13 +2,19 @@ from datetime import datetime, timezone
 
 from core.investigation.models import Evidence, InvestigationState, ServiceObservation
 from core.investigation.router import (
+    AD_CAPABILITIES,
     SERVICE_INVENTORY,
     SMB_CAPABILITIES,
     WEB_CAPABILITIES,
     get_candidate_capabilities,
 )
 
-ALL_CAPABILITIES = {SERVICE_INVENTORY, *WEB_CAPABILITIES, *SMB_CAPABILITIES}
+ALL_CAPABILITIES = {
+    SERVICE_INVENTORY,
+    *WEB_CAPABILITIES,
+    *SMB_CAPABILITIES,
+    *AD_CAPABILITIES,
+}
 
 
 def _evidence(status="completed", *, evidence_id="evidence-inventory"):
@@ -59,14 +65,17 @@ def test_http_routes_web_capabilities_in_stable_order():
     assert get_candidate_capabilities(state, ALL_CAPABILITIES) == list(WEB_CAPABILITIES)
 
 
-def test_smb_routes_all_implemented_smb_capabilities():
+def test_smb_routes_smb_and_ad_capabilities_together():
+    # AD posture capabilities (smbmap/rpcclient/netexec) ride the same SMB
+    # signal as SMB_CAPABILITIES — they're distinct tools but the same port.
     state = _state((445, "open", "microsoft-ds"))
-    assert get_candidate_capabilities(state, ALL_CAPABILITIES) == list(SMB_CAPABILITIES)
+    expected = [*SMB_CAPABILITIES, *AD_CAPABILITIES]
+    assert get_candidate_capabilities(state, ALL_CAPABILITIES) == expected
 
 
 def test_web_and_smb_are_combined_without_duplicates():
     state = _state((443, "open", "https"), (445, "open", "microsoft-ds"))
-    expected = [*WEB_CAPABILITIES, *SMB_CAPABILITIES]
+    expected = [*WEB_CAPABILITIES, *SMB_CAPABILITIES, *AD_CAPABILITIES]
     assert get_candidate_capabilities(state, ALL_CAPABILITIES) == expected
     assert get_candidate_capabilities(state, ALL_CAPABILITIES) == expected
 

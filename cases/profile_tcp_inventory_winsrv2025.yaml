@@ -1,0 +1,10 @@
+id: profile_tcp_inventory_winsrv2025
+version: v1
+category: capability.recon.profile
+description: Profile-driven bounded service inventory for the Windows Server 2025 lab VM.
+task: "Inventory services on the authorised Windows Server 2025 lab asset."
+scoring:
+  success_predicate: "profile_executed"
+tool_mode: real
+asset_id: "asset:winsrv2025-01"
+profile_id: "tcp-service-inventory-low"
