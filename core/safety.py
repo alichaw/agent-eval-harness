@@ -38,6 +38,7 @@ class ApprovalClaims:
     not_before: int
     expires_at: int
     nonce: str
+    credential_id: str = ""
 
 
 def profile_fingerprint(profile) -> str:
@@ -83,6 +84,7 @@ class ApprovalAuthority:
         profile_hash: str,
         ttl_seconds: int = 300,
         delay_seconds: int = 0,
+        credential_id: str = "",
     ) -> str:
         if not 1 <= ttl_seconds <= 3600:
             raise ApprovalError("approval TTL must be between 1 and 3600 seconds")
@@ -101,6 +103,12 @@ class ApprovalAuthority:
             not_before=not_before,
             expires_at=not_before + ttl_seconds,
             nonce=secrets.token_urlsafe(24),
+            # Binds the approval to exactly one named credential (core/credentials.py)
+            # -- an approval minted for "creds-vm-lab-01-admin" cannot be replayed
+            # against a run that loads a different credential, even for the same
+            # asset/profile. Empty string (default) means no credential is bound,
+            # which is every T1/T2 approval today -- fully backward compatible.
+            credential_id=credential_id,
         )
         payload = json.dumps(asdict(claims), sort_keys=True, separators=(",", ":")).encode()
         signature = hmac.new(self.secret, payload, hashlib.sha256).digest()
@@ -112,6 +120,7 @@ class ApprovalAuthority:
         asset_id: str,
         profile_id: str,
         profile_hash: str,
+        credential_id: str = "",
     ) -> ApprovalClaims:
         try:
             payload_part, signature_part = token.split(".", 1)
@@ -141,6 +150,8 @@ class ApprovalAuthority:
             raise ApprovalError("approval does not match asset/profile")
         if claims.profile_hash != profile_hash:
             raise ApprovalError("approval profile hash mismatch")
+        if claims.credential_id != credential_id:
+            raise ApprovalError("approval does not match credential")
 
         self.spent_dir.mkdir(parents=True, exist_ok=True)
         marker = self.spent_dir / hashlib.sha256(claims.nonce.encode()).hexdigest()

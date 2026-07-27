@@ -90,6 +90,51 @@ def test_expired_approval_is_rejected(tmp_path, monkeypatch):
         authority.verify_and_consume(token, "asset:test", profile.profile_id, fingerprint)
 
 
+def test_approval_bound_to_credential_rejects_missing_or_wrong_credential(tmp_path):
+    profile = _profile(tmp_path)
+    fingerprint = profile_fingerprint(profile)
+    authority = ApprovalAuthority(b"x" * 32, tmp_path / "spent")
+    token = authority.issue(
+        "asset:test", profile.profile_id, fingerprint, credential_id="creds-vm-lab-01-admin"
+    )
+
+    with pytest.raises(ApprovalError, match="does not match credential"):
+        authority.verify_and_consume(token, "asset:test", profile.profile_id, fingerprint)
+
+    with pytest.raises(ApprovalError, match="does not match credential"):
+        authority.verify_and_consume(
+            token, "asset:test", profile.profile_id, fingerprint, credential_id="creds-other"
+        )
+
+
+def test_approval_bound_to_credential_accepts_matching_credential(tmp_path):
+    profile = _profile(tmp_path)
+    fingerprint = profile_fingerprint(profile)
+    authority = ApprovalAuthority(b"x" * 32, tmp_path / "spent")
+    token = authority.issue(
+        "asset:test", profile.profile_id, fingerprint, credential_id="creds-vm-lab-01-admin"
+    )
+
+    claims = authority.verify_and_consume(
+        token, "asset:test", profile.profile_id, fingerprint, credential_id="creds-vm-lab-01-admin"
+    )
+
+    assert claims.credential_id == "creds-vm-lab-01-admin"
+
+
+def test_credential_less_approval_is_unaffected_by_credential_binding(tmp_path):
+    # Every existing T1/T2 flow calls issue()/verify_and_consume() without
+    # credential_id -- must keep working exactly as before.
+    profile = _profile(tmp_path)
+    fingerprint = profile_fingerprint(profile)
+    authority = ApprovalAuthority(b"x" * 32, tmp_path / "spent")
+    token = authority.issue("asset:test", profile.profile_id, fingerprint)
+
+    claims = authority.verify_and_consume(token, "asset:test", profile.profile_id, fingerprint)
+
+    assert claims.credential_id == ""
+
+
 def test_delayed_approval_is_rejected_before_cooling_off_elapses(tmp_path, monkeypatch):
     profile = _profile(tmp_path)
     fingerprint = profile_fingerprint(profile)
