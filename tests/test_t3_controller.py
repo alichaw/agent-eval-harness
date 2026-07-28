@@ -521,17 +521,17 @@ def test_request_mutation_mismatch_does_not_consume_matching_token(tmp_path):
     assert executor.invocation_count == 1
 
 
-class FailingMockT3Executor(MockT3Executor):
-    def run(self, plan):
-        self.invocation_count += 1
-        raise RuntimeError("synthetic-private-exception")
-
-
-def test_mock_failure_is_safe_and_approval_remains_consumed(tmp_path):
+def test_mock_failure_is_safe_and_approval_remains_consumed(tmp_path, monkeypatch):
     approval_authority = authority(tmp_path)
     request = initial_request()
     token = approval(approval_authority, request)
-    executor = FailingMockT3Executor()
+    executor = MockT3Executor()
+
+    def fail(_plan):
+        executor.invocation_count += 1
+        raise RuntimeError("synthetic-private-exception")
+
+    monkeypatch.setattr(executor, "run", fail)
     ctrl = controller(tmp_path, approval_authority)
 
     run_dir = ctrl.run_t3_action(request, initial_state(), executor, token)
