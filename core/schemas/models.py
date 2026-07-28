@@ -172,6 +172,8 @@ class TaskSpec(BaseModel):
     tool_mode: CaseToolMode = CaseToolMode.REAL
     target: str = ""
     agent_params: dict[str, Any] = Field(default_factory=dict)
+    t3_credential_ref: str = ""
+    t3_written_justification: str = ""
     asset_id: str = ""
     profile_id: str = ""
 

@@ -177,6 +177,7 @@ def cmd_approve(args) -> int:
         profile_fingerprint(profile),
         ttl_seconds=args.ttl_seconds,
         delay_seconds=args.delay_seconds,
+        credential_id=args.credential_id,
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -272,6 +273,11 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=0,
         help="cooling-off period before the approval becomes usable (0-86400)",
+    )
+    p_approve.add_argument(
+        "--credential-id",
+        default="",
+        help="optional named T3 credential id to bind to this approval token",
     )
     p_approve.add_argument("--output", required=True)
     p_approve.add_argument("--approval-spent-dir", default="config/local/approval-spent")

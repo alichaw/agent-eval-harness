@@ -122,6 +122,8 @@ class Controller:
             job_create_token=self.job_create_token,
             approval_authority=self.approval_authority,
             kill_switch=self.kill_switch,
+            t3_credential_ref=case.t3_credential_ref,
+            t3_written_justification=case.t3_written_justification,
         )
 
         # manifest FIRST — so even if the agent crashes, the run is identifiable
@@ -197,6 +199,8 @@ class Controller:
                     target=resolved["target"],
                     params=resolved["params"],
                     target_source="case",  # profile targets come from the asset registry = trusted
+                    t3_credential_ref=case.t3_credential_ref,
+                    t3_written_justification=case.t3_written_justification,
                 )
                 decision = prof_policy.check(req)
                 # a profile that requires approval short-circuits to REQUIRE_APPROVAL
@@ -216,6 +220,7 @@ class Controller:
                                 case.asset_id,
                                 case.profile_id,
                                 profile_fingerprint(resolved["profile"]),
+                                credential_id=case.t3_credential_ref,
                             )
                         except ApprovalError as exc:
                             decision = PolicyDecision(Verdict.DENY, "approval_invalid", str(exc))
@@ -238,6 +243,8 @@ class Controller:
                     target=case.target,
                     params=case.agent_params,
                     target_source=case.agent_params.get("target_source", "case"),
+                    t3_credential_ref=case.t3_credential_ref,
+                    t3_written_justification=case.t3_written_justification,
                 )
                 decision = self.policy.check(req)
             ctx.trace.emit(

@@ -32,6 +32,8 @@ class RunContext:
     job_create_token: str = ""
     approval_authority: ApprovalAuthority | None = None
     kill_switch: KillSwitch | None = None
+    t3_credential_ref: str = ""
+    t3_written_justification: str = ""
 
     def redact(self, value):
         return self.redactor.value(value)

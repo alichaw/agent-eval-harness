@@ -1,17 +1,14 @@
 # policy.yaml — production-grade, default-deny.
-# Configured for internal network SEGMENTATION TESTING (T1 recon + T2 scan).
+# Configured for internal network SEGMENTATION TESTING (T1 recon + T2 scan + T3 access).
 default: deny
 
 # ── Tool allowlist by tier (see 05_capability_authorization_model.md) ────────
-# T1 recon (autonomous) + T2 scan (approval) are enforced below via
-# allowed_tools/active_tools. T3 (access/lateral movement) is now WRITTEN as
-# t3_low/t3_high near the end of this file, but core/policy.py does not read
-# those keys yet and no T3 tool has a profile or hardened
-# endpoint — the agent still has no actual capability to invoke any of them.
-# Writing the scope down is step one of a real change process, not a grant.
-# Every T1/T2 tool below has a matching hardened
-# HexStrike job endpoint (sandbox/patches/apply_cancellable_jobs.py in the
-# hexstrike-ai repo), EXCEPT arp-scan/nc — see the active_tools note.
+# T1 recon (autonomous) + T2 scan (approval) + T3 access/lateral (time-delayed
+# approval) are enforced below via allowed_tools/active_tools/t3_low/t3_high.
+# T3 tools require hardened /api/jobs/* endpoints and credential handling.
+# Every T1/T2 tool below has a matching hardened HexStrike job endpoint
+# (sandbox/patches/apply_cancellable_jobs.py in the hexstrike-ai repo), EXCEPT
+# arp-scan/nc — see the active_tools note.
 #
 # Trimmed 2026-07-27: netdiscover, traceroute, tcptraceroute, whatweb, masscan,
 # nikto, snmp-check, smbclient, ffuf, feroxbuster had no entry at all in
@@ -43,6 +40,30 @@ allowed_tools:
   # off each use until they're wired into /api/jobs/* like everything else.
   - arp-scan
   - nc
+  # T3-Low · access/pivoting (approval-gated with 900s delay)
+  - ssh-port-forward
+  - chisel
+  - ligolo-ng
+  - proxychains
+  - powerview
+  - powerup
+  - seatbelt
+  - winpeas
+  - bloodhound
+  - sharphound
+  - netexec-authenticated
+  # T3-High · credential extraction (approval-gated with 3600s delay + written justification)
+  - impacket-secretsdump
+  - impacket-wmiexec
+  - impacket-psexec
+  - impacket-smbexec
+  - mimikatz
+  - rubeus
+  - evil-winrm
+  - hydra
+  - medusa
+  - patator
+  - responder
 
 # T2 active/intrusive tools: allowed but REQUIRE_APPROVAL before executing.
 active_tools:

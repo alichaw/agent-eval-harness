@@ -141,6 +141,7 @@ def execute_profile(
                 asset_id,
                 profile_id,
                 profile_fingerprint(resolved["profile"]),
+                credential_id=getattr(ctx, "t3_credential_ref", ""),
             )
         except ApprovalError as exc:
             ctx.trace.emit(
