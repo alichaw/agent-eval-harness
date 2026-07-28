@@ -16,7 +16,7 @@ assets:
 
   "asset:t1-target":
     asset_type: vulnerable_lab
-    target: "10.243.37.188"
+    target: "192.0.2.10"
     ports: "22,80,443,3000,5000,8000,8080,8443"
 
   # Windows Server 2025 lab VM — authorised, snapshotted/restorable. Ports match

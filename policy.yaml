@@ -86,7 +86,7 @@ active_tools:
 # with the real authorised ranges before any internal run.
 allowed_targets:
   - juiceshop
-  - 10.243.37.188/32     # asset:t1-target — renamed from the old docker-hostname entry
+  - 192.0.2.10/32     # asset:t1-target — renamed from the old docker-hostname entry
   - 192.0.2.10/32
   - 43.213.254.15/32     # asset:winsrv2025-01 — Windows Server 2025 lab VM
   # - 10.20.0.0/24         # authorised test VLAN        (example — replace)
