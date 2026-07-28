@@ -16,12 +16,14 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
 
 from core.adapters.base import AgentAdapter, RunContext
+from core.investigation.models import InvestigationState
 from core.policy import Policy
 from core.redaction import Redactor
 from core.safety import (
@@ -32,6 +34,8 @@ from core.safety import (
     profile_fingerprint,
 )
 from core.schemas.models import SCHEMA_VERSION, AgentResult, TaskSpec, TraceEventType
+from core.t3.executor import MockT3ExecutionPlan, MockT3Executor, MockT3Outcome
+from core.t3.models import T3ActionRequest, t3_action_fingerprint
 from core.trace.writer import TraceWriter
 
 
@@ -101,6 +105,275 @@ class Controller:
         }
 
     # optional; when set, every run is policy-gated
+
+    def run_t3_action(
+        self,
+        request: T3ActionRequest | dict[str, object],
+        state: InvestigationState,
+        executor: MockT3Executor,
+        approval_token: str | None = None,
+    ) -> Path:
+        """Run the mock-only T3 control chain and persist auditable artifacts.
+
+        Validation order is request, assets, policy, evidence, fingerprint,
+        approval consumption, then the non-executing mock boundary.
+        """
+        from core.policy import T3PolicyRequest, Verdict
+        from core.t3.gate import validate_t3_prerequisites
+
+        run_id = f"{datetime.now(timezone.utc):%Y%m%d-%H%M%S}-t3-{time.time_ns()}"
+        run_dir = self.runs_root / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        redactor = Redactor.from_assets(self.assets, redact_credentials=True)
+        trace = TraceWriter(run_id, run_dir / "trace.jsonl", redactor=redactor)
+
+        manifest = {
+            "run_id": run_id,
+            "created_utc": datetime.now(timezone.utc).isoformat(),
+            "agent": "mock-t3",
+            "schema_version": SCHEMA_VERSION,
+            "policy_gated": True,
+            "mock_only": True,
+        }
+        (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+
+        def emit(rule: str, verdict: str, text: str) -> None:
+            trace.emit(
+                TraceEventType.POLICY_EVENT,
+                rule=rule,
+                verdict=verdict,
+                text=text,
+            )
+
+        def finish(
+            *,
+            completed: bool,
+            status: str,
+            rule: str,
+            control_authorized: bool = False,
+            approval_consumed: bool = False,
+            executor_invoked: bool = False,
+            outcome: MockT3Outcome | None = None,
+        ) -> Path:
+            emit(
+                "t3_final_result",
+                Verdict.ALLOW.value if completed else Verdict.DENY.value,
+                "T3 mock flow completed" if completed else "T3 mock flow denied",
+            )
+            result = {
+                "run_id": run_id,
+                "completed": completed,
+                "status": status,
+                "rule": rule,
+                "control_authorized": control_authorized,
+                "approval_consumed": approval_consumed,
+                "mock_executor_invoked": executor_invoked,
+                "real_action_performed": False,
+                "mock_outcome": asdict(outcome) if outcome is not None else None,
+            }
+            (run_dir / "result.json").write_text(
+                json.dumps(redactor.value(result), indent=2)
+            )
+            return run_dir
+
+        # A. Revalidate model instances too: model_copy(update=...) can bypass checks.
+        try:
+            if isinstance(request, T3ActionRequest):
+                request = T3ActionRequest.model_validate(request.model_dump())
+            else:
+                request = T3ActionRequest.model_validate(request)
+        except Exception:  # noqa: BLE001 - request failures must not expose input
+            emit("t3_request_invalid", Verdict.DENY.value, "T3 request rejected")
+            return finish(completed=False, status="denied", rule="t3_request_invalid")
+        emit("t3_request_accepted", Verdict.ALLOW.value, "T3 request accepted for evaluation")
+
+        if not isinstance(executor, MockT3Executor):
+            emit("t3_mock_executor_required", Verdict.DENY.value, "Mock T3 executor rejected")
+            return finish(completed=False, status="denied", rule="t3_mock_executor_required")
+
+        if self.kill_switch is not None and self.kill_switch.engaged():
+            emit("kill_switch_engaged", Verdict.DENY.value, "T3 action blocked")
+            return finish(completed=False, status="denied", rule="kill_switch_engaged")
+
+        # B/C. Resolve registry-controlled targets before making policy requests.
+        if self.assets is None:
+            emit("t3_source_asset_unresolved", Verdict.DENY.value, "Source asset rejected")
+            return finish(completed=False, status="denied", rule="t3_source_asset_unresolved")
+        try:
+            source = self.assets.resolve(request.source_asset_id)
+        except Exception:  # noqa: BLE001 - registry failures must not expose details
+            emit("t3_source_asset_unresolved", Verdict.DENY.value, "Source asset rejected")
+            return finish(completed=False, status="denied", rule="t3_source_asset_unresolved")
+        source_target_value = source.get("target")
+        if not isinstance(source_target_value, str) or not source_target_value.strip():
+            emit("t3_source_target_invalid", Verdict.DENY.value, "Source asset rejected")
+            return finish(completed=False, status="denied", rule="t3_source_target_invalid")
+        source_target = source_target_value.strip()
+
+        destination = None
+        destination_target = None
+        if request.destination_asset_id is not None:
+            try:
+                destination = self.assets.resolve(request.destination_asset_id)
+            except Exception:  # noqa: BLE001 - registry failures must not expose details
+                emit(
+                    "t3_destination_asset_unresolved",
+                    Verdict.DENY.value,
+                    "Destination asset rejected",
+                )
+                return finish(
+                    completed=False,
+                    status="denied",
+                    rule="t3_destination_asset_unresolved",
+                )
+            destination_target_value = destination.get("target")
+            if (
+                not isinstance(destination_target_value, str)
+                or not destination_target_value.strip()
+            ):
+                emit(
+                    "t3_destination_target_invalid",
+                    Verdict.DENY.value,
+                    "Destination asset rejected",
+                )
+                return finish(
+                    completed=False,
+                    status="denied",
+                    rule="t3_destination_target_invalid",
+                )
+            destination_target = destination_target_value.strip()
+            # AssetRegistry has no canonical identity API yet. Exact resolved target
+            # equality prevents aliases with identical target strings from being
+            # treated as movement; hostname/IP equivalence remains out of scope.
+            if destination_target == source_target:
+                emit(
+                    "t3_destination_same_as_source",
+                    Verdict.DENY.value,
+                    "Destination asset rejected",
+                )
+                return finish(
+                    completed=False,
+                    status="denied",
+                    rule="t3_destination_same_as_source",
+                )
+
+        # D. Each resolved target is independently checked by the existing policy.
+        if self.policy is None:
+            emit("t3_policy_required", Verdict.DENY.value, "T3 policy authorization denied")
+            return finish(completed=False, status="denied", rule="t3_policy_required")
+
+        source_decision = self.policy.check_t3(
+            T3PolicyRequest(
+                capability_id=request.capability_id,
+                stage=request.stage.value,
+                target=source_target,
+            )
+        )
+        if source_decision.verdict is not Verdict.REQUIRE_APPROVAL:
+            emit(source_decision.rule, Verdict.DENY.value, "Source policy authorization denied")
+            return finish(completed=False, status="denied", rule=source_decision.rule)
+        emit("t3_source_authorized", Verdict.ALLOW.value, "Source policy authorization accepted")
+
+        if destination is not None:
+            destination_decision = self.policy.check_t3(
+                T3PolicyRequest(
+                    capability_id=request.capability_id,
+                    stage=request.stage.value,
+                    target=destination_target,
+                )
+            )
+            if destination_decision.verdict is not Verdict.REQUIRE_APPROVAL:
+                emit(
+                    destination_decision.rule,
+                    Verdict.DENY.value,
+                    "Destination policy authorization denied",
+                )
+                return finish(
+                    completed=False,
+                    status="denied",
+                    rule=destination_decision.rule,
+                )
+            emit(
+                "t3_destination_authorized",
+                Verdict.ALLOW.value,
+                "Destination policy authorization accepted",
+            )
+
+        # E. Evidence suitability is independent of target authorization.
+        gate_decision = validate_t3_prerequisites(request, state, self.assets)
+        if gate_decision.denied:
+            emit(gate_decision.rule, Verdict.DENY.value, "T3 prerequisites rejected")
+            return finish(completed=False, status="denied", rule=gate_decision.rule)
+        emit(
+            "t3_prerequisites_satisfied",
+            Verdict.ALLOW.value,
+            "T3 prerequisites accepted",
+        )
+
+        # F/G/H. The Controller computes and requires the exact action binding.
+        action_fingerprint = t3_action_fingerprint(request)
+        if not action_fingerprint:
+            emit("t3_fingerprint_invalid", Verdict.DENY.value, "T3 approval rejected")
+            return finish(completed=False, status="denied", rule="t3_fingerprint_invalid")
+        token = self.approval_token if approval_token is None else approval_token
+        if not token or self.approval_authority is None:
+            emit("t3_approval_required", Verdict.DENY.value, "T3 approval required")
+            return finish(completed=False, status="denied", rule="t3_approval_required")
+        try:
+            self.approval_authority.verify_and_consume(
+                token,
+                request.source_asset_id,
+                request.capability_id,
+                action_fingerprint,
+                action_fingerprint=action_fingerprint,
+            )
+        except Exception:  # noqa: BLE001 - approval details must not escape
+            emit("t3_approval_invalid", Verdict.DENY.value, "T3 approval rejected")
+            return finish(completed=False, status="denied", rule="t3_approval_invalid")
+        emit("t3_approval_verified", Verdict.ALLOW.value, "T3 approval consumed")
+
+        # I/J/K. Only an immutable credential-free plan crosses the mock boundary.
+        trace.emit(
+            TraceEventType.EXECUTION_STATE,
+            rule="t3_mock_execution_started",
+            state=ExecutionState.RUNNING.value,
+            text="Mock T3 execution started",
+        )
+        try:
+            outcome = executor.run(MockT3ExecutionPlan.from_request(request))
+            if not isinstance(outcome, MockT3Outcome):
+                raise TypeError("invalid mock T3 outcome")
+        except Exception:  # noqa: BLE001 - consumed approvals are never retried
+            trace.emit(
+                TraceEventType.EXECUTION_STATE,
+                rule="t3_mock_execution_failed",
+                state=ExecutionState.FAILED.value,
+                text="Mock T3 execution failed",
+            )
+            return finish(
+                completed=False,
+                status="mock_failed",
+                rule="t3_mock_execution_failed",
+                control_authorized=True,
+                approval_consumed=True,
+                executor_invoked=True,
+            )
+
+        trace.emit(
+            TraceEventType.EXECUTION_STATE,
+            rule="t3_mock_execution_completed",
+            state=ExecutionState.VERIFIED.value,
+            text="Mock T3 execution completed; no real action occurred",
+        )
+        return finish(
+            completed=True,
+            status="mock_completed",
+            rule="t3_result_completed",
+            control_authorized=True,
+            approval_consumed=True,
+            executor_invoked=True,
+            outcome=outcome,
+        )
 
     def run_case(self, case_path: str | Path, agent: AgentAdapter, seed: int = 0) -> Path:
         """Execute one case with one agent; return the run directory."""
