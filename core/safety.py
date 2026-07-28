@@ -39,6 +39,7 @@ class ApprovalClaims:
     expires_at: int
     nonce: str
     credential_id: str = ""
+    action_fingerprint: str = ""
 
 
 def profile_fingerprint(profile) -> str:
@@ -85,6 +86,7 @@ class ApprovalAuthority:
         ttl_seconds: int = 300,
         delay_seconds: int = 0,
         credential_id: str = "",
+        action_fingerprint: str = "",
     ) -> str:
         if not 1 <= ttl_seconds <= 3600:
             raise ApprovalError("approval TTL must be between 1 and 3600 seconds")
@@ -109,6 +111,9 @@ class ApprovalAuthority:
             # asset/profile. Empty string (default) means no credential is bound,
             # which is every T1/T2 approval today -- fully backward compatible.
             credential_id=credential_id,
+            # T3 approvals are bound to the complete, canonical control request.
+            # Empty keeps all existing T1/T2 approval behavior unchanged.
+            action_fingerprint=action_fingerprint,
         )
         payload = json.dumps(asdict(claims), sort_keys=True, separators=(",", ":")).encode()
         signature = hmac.new(self.secret, payload, hashlib.sha256).digest()
@@ -121,6 +126,7 @@ class ApprovalAuthority:
         profile_id: str,
         profile_hash: str,
         credential_id: str = "",
+        action_fingerprint: str = "",
     ) -> ApprovalClaims:
         try:
             payload_part, signature_part = token.split(".", 1)
@@ -152,6 +158,8 @@ class ApprovalAuthority:
             raise ApprovalError("approval profile hash mismatch")
         if claims.credential_id != credential_id:
             raise ApprovalError("approval does not match credential")
+        if claims.action_fingerprint != action_fingerprint:
+            raise ApprovalError("approval action fingerprint mismatch")
 
         self.spent_dir.mkdir(parents=True, exist_ok=True)
         marker = self.spent_dir / hashlib.sha256(claims.nonce.encode()).hexdigest()

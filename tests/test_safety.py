@@ -133,6 +133,29 @@ def test_credential_less_approval_is_unaffected_by_credential_binding(tmp_path):
     claims = authority.verify_and_consume(token, "asset:test", profile.profile_id, fingerprint)
 
     assert claims.credential_id == ""
+    assert claims.action_fingerprint == ""
+
+
+def test_approval_bound_to_t3_action_fingerprint(tmp_path):
+    profile = _profile(tmp_path)
+    fingerprint = profile_fingerprint(profile)
+    authority = ApprovalAuthority(b"x" * 32, tmp_path / "spent")
+    token = authority.issue(
+        "asset:test", profile.profile_id, fingerprint, action_fingerprint="a" * 64
+    )
+
+    with pytest.raises(ApprovalError, match="action fingerprint"):
+        authority.verify_and_consume(token, "asset:test", profile.profile_id, fingerprint)
+
+    with pytest.raises(ApprovalError, match="action fingerprint"):
+        authority.verify_and_consume(
+            token, "asset:test", profile.profile_id, fingerprint, action_fingerprint="b" * 64
+        )
+
+    claims = authority.verify_and_consume(
+        token, "asset:test", profile.profile_id, fingerprint, action_fingerprint="a" * 64
+    )
+    assert claims.action_fingerprint == "a" * 64
 
 
 def test_delayed_approval_is_rejected_before_cooling_off_elapses(tmp_path, monkeypatch):
