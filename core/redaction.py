@@ -16,18 +16,29 @@ from typing import Any
 _IPV4_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
 
 # T3-specific credential patterns (to be redacted unconditionally)
-_NTLM_HASH_RE = re.compile(r"\b[a-f0-9]{32}:[a-f0-9]{32}\b", re.IGNORECASE)  # NTLM: aabbccdd:eeffgghh
+_NTLM_HASH_RE = re.compile(
+    r"\b[a-f0-9]{32}:[a-f0-9]{32}\b", re.IGNORECASE
+)  # NTLM: aabbccdd:eeffgghh
 _KERBEROS_TICKET_RE = re.compile(r"\b[A-Z0-9+/]{100,}\b")  # TGT/TGS (rough heuristic)
-_PASSWORD_PATTERN_RE = re.compile(r"(?:password|passwd|pwd|secret)\s*[=:]\s*[^\s]{1,128}", re.IGNORECASE)
+_PASSWORD_PATTERN_RE = re.compile(
+    r"(?:password|passwd|pwd|secret)\s*[=:]\s*[^\s]{1,128}", re.IGNORECASE
+)
 _LM_HASH_RE = re.compile(r"\b[a-f0-9]{32}\b", re.IGNORECASE)  # LM hash (32 hex chars)
-_PLAINTEXT_PASSWORD_RE = re.compile(r"(?:login|user|admin|root|account)(?:\s+)?[=:@/](?:\s+)?([A-Za-z0-9!@#$%^&*()_+\-=\[\]{};':\",.<>/?\\|`~]{8,128})", re.IGNORECASE)
+_PLAINTEXT_PASSWORD_RE = re.compile(
+    r"(?:login|user|admin|root|account)(?:\s+)?[=:@/](?:\s+)?([A-Za-z0-9!@#$%^&*()_+\-=\[\]{};':\",.<>/?\\|`~]{8,128})",
+    re.IGNORECASE,
+)
 
 
 class Redactor:
     """Replace known targets with asset IDs, unknown IPv4s with pseudonyms, and T3 credentials."""
 
-    def __init__(self, target_aliases: Mapping[str, str] | None = None, salt: bytes | None = None,
-                 redact_credentials: bool = False):
+    def __init__(
+        self,
+        target_aliases: Mapping[str, str] | None = None,
+        salt: bytes | None = None,
+        redact_credentials: bool = False,
+    ):
         self.target_aliases = {
             str(target): str(alias)
             for target, alias in (target_aliases or {}).items()
@@ -73,10 +84,10 @@ class Redactor:
         result = value
         for target, alias in sorted(self.target_aliases.items(), key=lambda item: -len(item[0])):
             result = result.replace(target, alias)
-        
+
         # Always redact IPv4 addresses
         result = _IPV4_RE.sub(self._redact_ipv4, result)
-        
+
         # T3-specific credential redaction (if enabled, always applied to T3-High output)
         if self.redact_credentials:
             # Redact NTLM hashes (aabbccdd:eeffgghh format)
@@ -87,7 +98,7 @@ class Redactor:
             result = _PASSWORD_PATTERN_RE.sub(self._redact_credential, result)
             # Redact LM hashes
             result = _LM_HASH_RE.sub(self._redact_credential, result)
-        
+
         return result
 
     def value(self, value: Any) -> Any:

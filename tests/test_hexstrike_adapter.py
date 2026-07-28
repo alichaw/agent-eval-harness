@@ -606,7 +606,12 @@ def test_cancellable_rpcclient_job_sends_target_and_fixed_commands(tmp_path, mon
         return _FakeResp(
             {
                 "status": "succeeded",
-                "result": {"success": True, "return_code": 0, "stdout": "user:[Administrator]", "stderr": ""},
+                "result": {
+                    "success": True,
+                    "return_code": 0,
+                    "stdout": "user:[Administrator]",
+                    "stderr": "",
+                },
             }
         )
 
@@ -615,7 +620,10 @@ def test_cancellable_rpcclient_job_sends_target_and_fixed_commands(tmp_path, mon
             return _FakeResp({})
         assert url.endswith("/api/jobs/rpcclient")
         assert kwargs["headers"]["X-Job-Create-Token"] == "create-secret"
-        assert kwargs["json"] == {"target": "172.18.0.2", "commands": ["enumdomusers", "enumdomgroups"]}
+        assert kwargs["json"] == {
+            "target": "172.18.0.2",
+            "commands": ["enumdomusers", "enumdomgroups"],
+        }
         return _FakeResp({"job_id": "opaque-job", "job_token": "secret-capability"}, status=202)
 
     monkeypatch.setattr("core.adapters.hexstrike.requests.get", fake_get)
@@ -641,7 +649,12 @@ def test_cancellable_netexec_job_sends_target_and_fixed_checks(tmp_path, monkeyp
         return _FakeResp(
             {
                 "status": "succeeded",
-                "result": {"success": True, "return_code": 0, "stdout": "SMB [+] guest login", "stderr": ""},
+                "result": {
+                    "success": True,
+                    "return_code": 0,
+                    "stdout": "SMB [+] guest login",
+                    "stderr": "",
+                },
             }
         )
 
@@ -650,7 +663,10 @@ def test_cancellable_netexec_job_sends_target_and_fixed_checks(tmp_path, monkeyp
             return _FakeResp({})
         assert url.endswith("/api/jobs/netexec")
         assert kwargs["headers"]["X-Job-Create-Token"] == "create-secret"
-        assert kwargs["json"] == {"target": "172.18.0.2", "checks": ["shares", "pass-policy", "local-groups"]}
+        assert kwargs["json"] == {
+            "target": "172.18.0.2",
+            "checks": ["shares", "pass-policy", "local-groups"],
+        }
         assert "protocol" not in kwargs["json"]
         return _FakeResp({"job_id": "opaque-job", "job_token": "secret-capability"}, status=202)
 

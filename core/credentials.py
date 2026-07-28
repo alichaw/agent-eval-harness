@@ -59,7 +59,12 @@ class CredentialStore:
         self.root = Path(root)
 
     def load(self, credential_id: str) -> Credential:
-        if not credential_id or credential_id in {".", ".."} or "/" in credential_id or "\\" in credential_id:
+        if (
+            not credential_id
+            or credential_id in {".", ".."}
+            or "/" in credential_id
+            or "\\" in credential_id
+        ):
             raise CredentialError(f"invalid credential id: {credential_id!r}")
 
         path = self.root / f"{credential_id}.json"
@@ -87,7 +92,11 @@ class CredentialStore:
             raise CredentialError(f"credential {credential_id} missing username")
         if not secret or not isinstance(secret, str):
             raise CredentialError(f"credential {credential_id} missing secret")
-        if not isinstance(allowed, list) or not allowed or not all(isinstance(a, str) for a in allowed):
+        if (
+            not isinstance(allowed, list)
+            or not allowed
+            or not all(isinstance(a, str) for a in allowed)
+        ):
             raise CredentialError(
                 f"credential {credential_id} must list at least one allowed_asset_ids entry"
             )

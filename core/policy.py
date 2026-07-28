@@ -82,7 +82,7 @@ class Policy:
             data = yaml.safe_load(Path(path).read_text()) or {}
         except (OSError, yaml.YAMLError) as e:
             raise PolicyLoadError(f"cannot load policy: {e}") from e
-        
+
         # Extract T3 tool lists
         t3_low_config = data.get("t3_low", {})
         t3_high_config = data.get("t3_high", {})
@@ -90,7 +90,7 @@ class Policy:
         t3_high_tools = t3_high_config.get("tools", [])
         t3_low_delay = t3_low_config.get("approval", {}).get("delay_seconds_min", 900)
         t3_high_delay = t3_high_config.get("approval", {}).get("delay_seconds_min", 3600)
-        
+
         return cls(
             default=data.get("default", "deny"),
             allowed_tools=data.get("allowed_tools", []),
@@ -215,7 +215,11 @@ class Policy:
             return PolicyDecision(
                 Verdict.REQUIRE_APPROVAL,
                 "t3_high_requires_approval",
-                f"'{req.tool}' is a T3-High tool (extraction/lateral movement) — requires {self.t3_high_delay_seconds}s approval delay",
+                (
+                    f"'{req.tool}' is a T3-High tool "
+                    "(credential extraction/lateral movement) — requires "
+                    f"{self.t3_high_delay_seconds}s approval delay"
+                ),
             )
 
         # 7. T3-Low tools: require approval with standard delay
@@ -223,7 +227,10 @@ class Policy:
             return PolicyDecision(
                 Verdict.REQUIRE_APPROVAL,
                 "t3_low_requires_approval",
-                f"'{req.tool}' is a T3-Low tool (access/pivoting) — requires {self.t3_low_delay_seconds}s approval delay",
+                (
+                    f"'{req.tool}' is a T3-Low tool (access/pivoting) — requires "
+                    f"{self.t3_low_delay_seconds}s approval delay"
+                ),
             )
 
         # 8. active tools need approval (architecture ready; approval flow = W5)
