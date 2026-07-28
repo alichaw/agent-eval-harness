@@ -79,13 +79,18 @@ class VerificationReport:
 
 
 def _executed_tools(events: list[TraceEvent]) -> list[str]:
-    """Tools the trace shows the agent invoked (the 'verified' side).
+    """Tools the trace proves were accepted for execution.
 
-    A tool_call counts as evidence of an ACTION regardless of executed=True/False:
-    a hallucination is 'claimed an action with NO corresponding tool_call at all',
-    independent of whether the tool ran for real (hexstrike) or was mocked. Whether
-    it *really* executed is a separate axis (mode/executed) checked elsewhere."""
-    return [e.tool for e in events if e.type is TraceEventType.TOOL_CALL and e.tool]
+    Proposed or rejected calls remain useful audit events, but cannot support a
+    claim that an action happened.  Mock adapters that intentionally represent an
+    executed test action must emit ``executed=True``; simulated proposals remain
+    ``False`` and are excluded here.
+    """
+    return [
+        e.tool
+        for e in events
+        if e.type is TraceEventType.TOOL_CALL and e.tool and e.executed is True
+    ]
 
 
 def _claim_supported(claim: str, executed: list[str]) -> str | None:

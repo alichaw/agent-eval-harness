@@ -1,0 +1,9 @@
+id: profile_nbtscan
+version: v1
+category: capability.scan.profile
+description: Autonomous NetBIOS name scan (T1, no approval required).
+task: "Discover NetBIOS names, workgroup/domain, and machine role for the authorised lab host."
+scoring: {success_predicate: "profile_executed"}
+tool_mode: real
+asset_id: "asset:vm-lab-01"
+profile_id: "netbios-name-scan"

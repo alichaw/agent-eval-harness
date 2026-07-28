@@ -57,6 +57,8 @@ class ActionRequest:
     params: dict = field(default_factory=dict)
     target_source: str = "case"  # "case" (trusted) | "tool_output" (tainted)
     cost_so_far: float = 0.0
+    t3_credential_ref: str = ""  # T3 credential set identifier (not the actual secret)
+    t3_written_justification: str = ""  # T3-High only: human-written justification
 
 
 @dataclass
@@ -68,6 +70,10 @@ class Policy:
     active_tools: list[str] = field(default_factory=list)
     max_cost_usd: float = float("inf")
     deny_flags: dict[str, list[str]] = field(default_factory=dict)
+    t3_low_tools: list[str] = field(default_factory=list)
+    t3_high_tools: list[str] = field(default_factory=list)
+    t3_low_delay_seconds: int = 900  # 15 min default
+    t3_high_delay_seconds: int = 3600  # 1 hour default
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> Policy:
@@ -76,6 +82,15 @@ class Policy:
             data = yaml.safe_load(Path(path).read_text()) or {}
         except (OSError, yaml.YAMLError) as e:
             raise PolicyLoadError(f"cannot load policy: {e}") from e
+
+        # Extract T3 tool lists
+        t3_low_config = data.get("t3_low", {})
+        t3_high_config = data.get("t3_high", {})
+        t3_low_tools = t3_low_config.get("tools", [])
+        t3_high_tools = t3_high_config.get("tools", [])
+        t3_low_delay = t3_low_config.get("approval", {}).get("delay_seconds_min", 900)
+        t3_high_delay = t3_high_config.get("approval", {}).get("delay_seconds_min", 3600)
+
         return cls(
             default=data.get("default", "deny"),
             allowed_tools=data.get("allowed_tools", []),
@@ -84,6 +99,10 @@ class Policy:
             active_tools=data.get("active_tools", []),
             max_cost_usd=data.get("max_cost_usd", float("inf")),
             deny_flags=data.get("deny_flags", {}),
+            t3_low_tools=t3_low_tools,
+            t3_high_tools=t3_high_tools,
+            t3_low_delay_seconds=t3_low_delay,
+            t3_high_delay_seconds=t3_high_delay,
         )
 
     @staticmethod
@@ -141,6 +160,14 @@ class Policy:
                 Verdict.DENY, "tool_not_allowed", f"'{req.tool}' not in allowed_tools"
             )
 
+        # responder is not a scoped, single-target T3 tool and must remain disabled
+        if req.tool == "responder":
+            return PolicyDecision(
+                Verdict.DENY,
+                "responder_blocked",
+                "'responder' is blocked until a scoped broadcast-domain authorization model exists",
+            )
+
         # 3. hard exclusion: denied targets always win over allowed targets
         if req.target and self._target_denied(req.target):
             return PolicyDecision(
@@ -170,7 +197,43 @@ class Policy:
                     Verdict.DENY, "denied_flag", f"'{bad}' present for '{req.tool}'"
                 )
 
-        # 6. active tools need approval (architecture ready; approval flow = W5)
+        # 6. T3-High tools: require approval with extended delay, written justification,
+        # and a credential reference bound to the approval token.
+        if req.tool in self.t3_high_tools:
+            if not req.t3_written_justification:
+                return PolicyDecision(
+                    Verdict.DENY,
+                    "t3_high_missing_justification",
+                    f"'{req.tool}' is a T3-High tool and requires a human-written justification",
+                )
+            if not req.t3_credential_ref:
+                return PolicyDecision(
+                    Verdict.DENY,
+                    "t3_high_missing_credential_ref",
+                    f"'{req.tool}' is a T3-High tool and requires a credential reference",
+                )
+            return PolicyDecision(
+                Verdict.REQUIRE_APPROVAL,
+                "t3_high_requires_approval",
+                (
+                    f"'{req.tool}' is a T3-High tool "
+                    "(credential extraction/lateral movement) — requires "
+                    f"{self.t3_high_delay_seconds}s approval delay"
+                ),
+            )
+
+        # 7. T3-Low tools: require approval with standard delay
+        if req.tool in self.t3_low_tools:
+            return PolicyDecision(
+                Verdict.REQUIRE_APPROVAL,
+                "t3_low_requires_approval",
+                (
+                    f"'{req.tool}' is a T3-Low tool (access/pivoting) — requires "
+                    f"{self.t3_low_delay_seconds}s approval delay"
+                ),
+            )
+
+        # 8. active tools need approval (architecture ready; approval flow = W5)
         if req.tool in self.active_tools:
             return PolicyDecision(
                 Verdict.REQUIRE_APPROVAL,

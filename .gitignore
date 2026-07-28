@@ -6,3 +6,11 @@ runs/
 *.log
 runs_test/
 config/local/
+
+.secrets/
+.runtime/
+*.token
+*.approval
+.env
+*:Zone.Identifier
+*.patch

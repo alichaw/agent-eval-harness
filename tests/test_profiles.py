@@ -35,11 +35,16 @@ def _policy():
             "smb-posture",
             "smb-anonymous-access",
             "smb-ms17-010-check",
+            "rdp-posture",
+            "smbmap",
+            "rpcclient",
+            "nbtscan",
+            "netexec",
             "none",
         ],
         allowed_targets=[
             "juiceshop",
-            "t1-target",
+            "192.0.2.10/32",
             "172.18.0.0/16",
             "192.0.2.10/32",
         ],
@@ -155,7 +160,7 @@ def test_direct_profile_accepts_bound_single_use_approval(tmp_path):
     profile = catalog.get("tcp-service-inventory-low")
     authority = ApprovalAuthority(b"a" * 32, tmp_path / "spent")
     token = authority.issue(
-        "asset:web-lab-01",
+        "asset:t1-target",
         profile.profile_id,
         profile_fingerprint(profile),
     )
@@ -277,6 +282,7 @@ def test_bounded_nuclei_profile_requires_approval_and_has_no_raw_flags():
         ("smb-posture-assessment", "smb-posture"),
         ("smb-anonymous-access-check", "smb-anonymous-access"),
         ("smb-ms17-010-check", "smb-ms17-010-check"),
+        ("rdp-posture-assessment", "rdp-posture"),
     ],
 )
 def test_smb_profiles_require_approval_and_expose_no_commands(profile_id, tool):
@@ -298,3 +304,51 @@ def test_smb_profiles_require_approval_and_expose_no_commands(profile_id, tool):
     assert "username" not in params
     assert "password" not in params
     assert "additional_args" not in params
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "tool"),
+    [
+        ("smb-share-enum-low", "smbmap"),
+        ("smb-user-enum-rid-low", "rpcclient"),
+        ("ad-null-session-posture", "netexec"),
+    ],
+)
+def test_ad_t2_profiles_require_approval_and_expose_no_raw_flags(profile_id, tool):
+    decision, resolved = gate(
+        _cat(),
+        _assets(),
+        _policy(),
+        "asset:vm-lab-01",
+        profile_id,
+    )
+
+    assert decision.verdict is Verdict.REQUIRE_APPROVAL
+    assert resolved is not None
+    assert resolved["tool"] == tool
+    profile = resolved["profile"]
+    assert profile.approval_required is True
+    assert profile.risk_tier.value == "medium"
+
+    params = resolved["params"]
+    assert "raw_command" not in params
+    assert "custom_flags" not in params
+    assert "password" not in params
+    assert "additional_args" not in params
+
+
+def test_netbios_name_scan_profile_is_low_risk_and_autonomous():
+    decision, resolved = gate(
+        _cat(),
+        _assets(),
+        _policy(),
+        "asset:vm-lab-01",
+        "netbios-name-scan",
+    )
+
+    assert decision.verdict is Verdict.ALLOW
+    assert resolved is not None
+    assert resolved["tool"] == "nbtscan"
+    profile = resolved["profile"]
+    assert profile.approval_required is False
+    assert profile.risk_tier.value == "low"

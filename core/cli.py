@@ -176,14 +176,20 @@ def cmd_approve(args) -> int:
         args.profile_id,
         profile_fingerprint(profile),
         ttl_seconds=args.ttl_seconds,
+        delay_seconds=args.delay_seconds,
+        credential_id=args.credential_id,
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(output, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(token + "\n")
-    print(f"approval written: {output}")
-    print(f"expires in      : {args.ttl_seconds}s")
+    print(f"approval written : {output}")
+    if args.delay_seconds:
+        print(f"usable in        : {args.delay_seconds}s (cooling-off)")
+        print(f"usable window    : {args.ttl_seconds}s after that")
+    else:
+        print(f"expires in       : {args.ttl_seconds}s")
     return 0
 
 
@@ -262,6 +268,17 @@ def main(argv: list[str] | None = None) -> int:
     p_approve.add_argument("--asset-id", required=True)
     p_approve.add_argument("--profile-id", required=True)
     p_approve.add_argument("--ttl-seconds", type=int, default=300)
+    p_approve.add_argument(
+        "--delay-seconds",
+        type=int,
+        default=0,
+        help="cooling-off period before the approval becomes usable (0-86400)",
+    )
+    p_approve.add_argument(
+        "--credential-id",
+        default="",
+        help="optional named T3 credential id to bind to this approval token",
+    )
     p_approve.add_argument("--output", required=True)
     p_approve.add_argument("--approval-spent-dir", default="config/local/approval-spent")
     p_approve.set_defaults(func=cmd_approve)

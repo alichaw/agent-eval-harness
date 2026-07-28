@@ -180,6 +180,13 @@ class HexStrikeAdapter(AgentAdapter):
             "body": lambda tgt, p: {},
             "claim": lambda tgt, p: f"checked MS17-010 exposure on {tgt}",
         },
+        "rdp-posture": {
+            "target_style": "raw",
+            "target_field": "target",
+            "judge_kind": "assessment",
+            "body": lambda tgt, p: {},
+            "claim": lambda tgt, p: f"assessed RDP security posture on {tgt}",
+        },
         # -- T1 recon (segmentation testing): host discovery + connectivity --------
         # These answer "which hosts are alive / can A reach B" — read-only, the core
         # of isolation testing. NOTE: confirm each HexStrike endpoint's real param
@@ -200,6 +207,44 @@ class HexStrikeAdapter(AgentAdapter):
                 "additional_args": p.get("additional_args", "-z -v -w 3"),
             },
             "claim": lambda tgt, p: f"connectivity-tested {tgt}:{p.get('ports', '')}",
+        },
+        # -- T2 Windows/AD enumeration ------------------------------------------
+        # Verified against hexstrike-ai's hardened /api/jobs/* handlers (sandbox/
+        # patches/apply_cancellable_jobs.py v13). These four also exist as legacy
+        # /api/tools/* endpoints (shell=True, f-string command building) for the
+        # non-cancellable path — bodies below are kept to the same fixed fields
+        # either way, so no free-form flag ever reaches either variant.
+        "smbmap": {
+            "target_style": "raw",
+            "target_field": "target",
+            "judge_kind": "assessment",
+            "body": lambda tgt, p: {},
+            "claim": lambda tgt, p: f"enumerated SMB shares on {tgt}",
+        },
+        "rpcclient": {
+            "target_style": "raw",
+            "target_field": "target",
+            "judge_kind": "assessment",
+            "body": lambda tgt, p: {
+                "commands": p.get("commands", ["enumdomusers", "enumdomgroups"]),
+            },
+            "claim": lambda tgt, p: f"enumerated domain users/groups via RID cycling on {tgt}",
+        },
+        "nbtscan": {
+            "target_style": "raw",
+            "target_field": "target",
+            "judge_kind": "assessment",
+            "body": lambda tgt, p: {},
+            "claim": lambda tgt, p: f"NetBIOS-scanned {tgt}",
+        },
+        "netexec": {
+            "target_style": "raw",
+            "target_field": "target",
+            "judge_kind": "assessment",
+            "body": lambda tgt, p: {
+                "checks": p.get("checks", ["shares", "pass-policy", "local-groups"]),
+            },
+            "claim": lambda tgt, p: f"assessed AD null-session posture on {tgt}",
         },
     }
 
@@ -314,6 +359,22 @@ class HexStrikeAdapter(AgentAdapter):
         job_token = created.get("job_token", "")
         if not job_id or not job_token:
             raise HexStrikeError("cancellable job response missing capability")
+        # A requested call is not evidence of execution.  Only mark it executed
+        # after the sandbox has accepted the request and returned an opaque job
+        # capability.  This keeps rejected authentication/allowlist requests out
+        # of the verifier's executed-action evidence.
+        ctx.trace.emit(
+            TraceEventType.TOOL_CALL,
+            tool=tool,
+            params=params,
+            executed=True,
+            mode=ToolMode.REAL,
+        )
+        ctx.trace.emit(
+            TraceEventType.EXECUTION_STATE,
+            state="job_created",
+            text=f"{tool} sandbox job accepted",
+        )
         headers = {"X-Job-Token": job_token}
         job_url = f"{self.base_url}/api/jobs/{job_id}"
         deadline = time.monotonic() + self.timeout
@@ -420,7 +481,12 @@ class HexStrikeAdapter(AgentAdapter):
 
         ts = time.time()
         ctx.trace.emit(
-            TraceEventType.TOOL_CALL, tool=tool, params=params, executed=True, mode=ToolMode.REAL
+            TraceEventType.TOOL_CALL,
+            tool=tool,
+            params=params,
+            executed=False,
+            mode=ToolMode.REAL,
+            text="requested",
         )
         try:
             if (
@@ -433,6 +499,11 @@ class HexStrikeAdapter(AgentAdapter):
                     "smb-posture",
                     "smb-anonymous-access",
                     "smb-ms17-010-check",
+                    "rdp-posture",
+                    "rpcclient",
+                    "smbmap",
+                    "nbtscan",
+                    "netexec",
                 }
                 and ctx.kill_switch is not None
             ):
@@ -441,6 +512,13 @@ class HexStrikeAdapter(AgentAdapter):
                 resp = requests.post(endpoint, json=params, timeout=self.timeout)
                 status_code = resp.status_code
                 data = resp.json()
+                ctx.trace.emit(
+                    TraceEventType.TOOL_CALL,
+                    tool=tool,
+                    params=params,
+                    executed=True,
+                    mode=ToolMode.REAL,
+                )
         except (requests.RequestException, HexStrikeError) as e:
             ctx.trace.emit(TraceEventType.ERROR, error_class="request_failed", text=str(e))
             return AgentResult(

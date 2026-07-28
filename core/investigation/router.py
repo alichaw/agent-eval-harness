@@ -20,6 +20,17 @@ SMB_CAPABILITIES = (
     "windows.smb.anonymous_access_assess",
     "windows.smb.known_vulnerability_assess",
 )
+# AD posture capabilities routed off the same SMB signal as SMB_CAPABILITIES
+# (smbmap/rpcclient/netexec all operate over SMB/RPC, port 139/445) — kept as
+# a separate tuple from SMB_CAPABILITIES for readability, not for a different
+# trigger. windows.ad.ldap_anonymous_enum and windows.ad.kerberos_asrep_roast_detect
+# were removed 2026-07-24: neither has a real backing HexStrike endpoint, so
+# routing them would propose a capability the harness can't actually execute.
+AD_CAPABILITIES = (
+    "windows.ad.smb_share_enum",
+    "windows.ad.smb_rid_user_enum",
+    "windows.ad.null_session_posture",
+)
 
 _HTTP_PORTS = {80, 443, 3000, 8000, 8080, 8443}
 _HTTP_SERVICES = {"http", "https", "http-proxy", "http-alt", "ssl/http"}
@@ -60,6 +71,7 @@ def get_candidate_capabilities(
         candidates.extend(WEB_CAPABILITIES)
     if any(_is_smb(service.port, service.service) for service in open_services):
         candidates.extend(SMB_CAPABILITIES)
+        candidates.extend(AD_CAPABILITIES)
     return _filter_candidates(candidates, available_capabilities, unavailable)
 
 

@@ -6,10 +6,22 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from core.investigation.router import SERVICE_INVENTORY, SMB_CAPABILITIES, WEB_CAPABILITIES
+from core.investigation.router import (
+    AD_CAPABILITIES,
+    SERVICE_INVENTORY,
+    SMB_CAPABILITIES,
+    WEB_CAPABILITIES,
+)
 from core.profiles import ProfileCatalog
 
-ROUTABLE_CAPABILITIES = frozenset({SERVICE_INVENTORY, *WEB_CAPABILITIES, *SMB_CAPABILITIES})
+ROUTABLE_CAPABILITIES = frozenset(
+    {
+        SERVICE_INVENTORY,
+        *WEB_CAPABILITIES,
+        *SMB_CAPABILITIES,
+        *AD_CAPABILITIES,
+    }
+)
 
 DEFAULT_CAPABILITY_PROFILES: Mapping[str, str] = MappingProxyType(
     {
@@ -20,6 +32,9 @@ DEFAULT_CAPABILITY_PROFILES: Mapping[str, str] = MappingProxyType(
         "windows.smb.posture_assess": "smb-posture-assessment",
         "windows.smb.anonymous_access_assess": "smb-anonymous-access-check",
         "windows.smb.known_vulnerability_assess": "smb-ms17-010-check",
+        "windows.ad.smb_share_enum": "smb-share-enum-low",
+        "windows.ad.smb_rid_user_enum": "smb-user-enum-rid-low",
+        "windows.ad.null_session_posture": "ad-null-session-posture",
     }
 )
 

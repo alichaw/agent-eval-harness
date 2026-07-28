@@ -4,6 +4,7 @@ import json
 
 from core.adapters.base import AgentAdapter
 from core.controller import Controller
+from core.profiles import AssetRegistry
 from core.redaction import Redactor
 from core.schemas.models import AgentResult, ToolMode, TraceEventType
 from core.trace.writer import TraceWriter
@@ -53,6 +54,22 @@ def test_trace_writer_redacts_nested_values(tmp_path):
     assert "198.51.100.9" not in raw
     assert "asset:test-host" in raw
     assert "ip:" in raw
+
+
+def test_asset_target_uses_explicit_non_routable_marker():
+    assets = AssetRegistry(
+        {"asset:t1-container": {"target": "t1-target", "asset_type": "web_lab"}}
+    )
+    redactor = Redactor.from_assets(assets)
+
+    assert redactor.text("http://t1-target:8000") == "http://<asset:t1-container>:8000"
+
+
+def test_invalid_ipv4_like_text_is_not_pseudonymised():
+    redactor = Redactor(salt=b"")
+
+    assert redactor.text("version 999.999.999.999") == "version 999.999.999.999"
+    assert redactor.text("host 192.0.2.44") != "host 192.0.2.44"
 
 
 def test_controller_artifacts_do_not_contain_raw_target(tmp_path):

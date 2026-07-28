@@ -1,0 +1,9 @@
+id: profile_rpcclient
+version: v1
+category: capability.scan.profile
+description: Approval-gated RID-cycling domain user/group enumeration over a null SMB/RPC session.
+task: "Enumerate domain users and groups via RID cycling over a null SMB/RPC session on the authorised lab host."
+scoring: {success_predicate: "profile_executed"}
+tool_mode: real
+asset_id: "asset:vm-lab-01"
+profile_id: "smb-user-enum-rid-low"

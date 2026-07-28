@@ -14,7 +14,17 @@ assets:
     target: 192.0.2.10
     ports: "22,80,443"
 
-  "asset:t1-container":
+  "asset:t1-target":
+    asset_type: vulnerable_lab
+    target: "192.0.2.10"
+    ports: "22,80,443,3000,5000,8000,8080,8443"
+
+  # Windows Server 2025 lab VM — authorised, snapshotted/restorable. Ports match
+  # the corporate egress + AWS Security Group rules actually opened for this
+  # target (2026-07-24) — web ports + RDP only. The wider Windows/AD port set
+  # (445/389/88/etc.) was tried first but is blocked upstream; add it back if
+  # those get opened later.
+  "asset:winsrv2025-01":
     asset_type: host
-    target: t1-target
-    ports: "8000"
+    target: "43.213.254.15"
+    ports: "3389,80,443,3000,8080"

@@ -128,3 +128,7 @@ class AssetRegistry:
         if asset_id not in self._assets:
             raise ProfileError(f"unknown asset_id '{asset_id}'")  # fail-closed
         return self._assets[asset_id]
+
+    def items(self):
+        """Iterate over registered assets without exposing registry internals."""
+        return self._assets.items()
