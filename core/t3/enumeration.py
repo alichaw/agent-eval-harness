@@ -709,6 +709,9 @@ def run_t3b(
             duration_seconds=item.duration_seconds,
             evidence_predicate_passed=item.verification_status == "verified",
             executed=True,
+            result_digest=hashlib.sha256(
+                json.dumps(asdict(item), sort_keys=True).encode()
+            ).hexdigest(),
             text=item.observation_summary,
         )
     result = {

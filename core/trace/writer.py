@@ -11,6 +11,8 @@ Action Verifier cross-references events by seq (claim_seq -> claimed_action).
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from pathlib import Path
 
@@ -25,6 +27,7 @@ class TraceWriter:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._seq = 0
+        self._previous_digest = "0" * 64
 
     def emit(self, type: TraceEventType, **fields) -> int:
         """Build + validate a TraceEvent, append it as one JSONL line, return its seq.
@@ -40,8 +43,15 @@ class TraceWriter:
             run_id=self.run_id,
             seq=seq,
             type=type,
+            previous_digest=self._previous_digest,
             **safe_fields,
         )
+        document = event.model_dump(mode="json", exclude_none=True)
+        digest = hashlib.sha256(
+            json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        event = event.model_copy(update={"event_digest": digest})
+        self._previous_digest = digest
         # exclude_none keeps each line sparse — only the fields that event type uses
         with self.path.open("a", encoding="utf-8") as f:
             f.write(event.model_dump_json(exclude_none=True) + "\n")

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import stat
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -13,9 +13,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from core.investigation.models import InvestigationState
 from core.policy import Policy, T3PolicyRequest, Verdict
 from core.profiles import AssetRegistry, ProfileCatalog
-from core.safety import ApprovalAuthority, KillSwitch
+from core.safety import ApprovalAuthority, KillSwitch, profile_fingerprint
 from core.t3.access import (
     T3_ACCESS_PROFILE,
+    T3_AUTHORIZED_ACCESS_PROFILE,
     BoundedLabSshT3Executor,
     ParamikoBoundedSshTransport,
     T3AccessProposal,
@@ -39,7 +40,12 @@ class T3RuntimeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     asset_id: str = Field(min_length=1, max_length=128)
-    profile_id: str = Field(pattern=r"^(t3-access-bounded|windows-host-enumeration-readonly)$")
+    profile_id: str = Field(
+        pattern=(
+            r"^(t3-access-bounded|t3-authorized-access-bounded|"
+            r"windows-host-enumeration-readonly)$"
+        )
+    )
     credential_ref: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
     username: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$")
     private_key_path: str = Field(min_length=1)
@@ -119,7 +125,19 @@ def compose_t3_runtime(
 
     assets = AssetRegistry.from_yaml(assets_path)
     source = dict(assets.resolve(proposal.asset_id))
-    if source.get("credential_ref") not in (None, config.credential_ref):
+    if proposal.profile_id == T3_AUTHORIZED_ACCESS_PROFILE and (
+        source.get("asset_type") != "host"
+        or source.get("execution_scope") != "isolated_lab"
+        or source.get("platform") != "windows_openssh"
+        or type(source.get("ssh_port")) is not int
+        or source.get("ssh_port") != 22
+    ):
+        raise ValueError("registered authorized-access lab asset invalid")
+    registered_credential = source.get("credential_ref")
+    if proposal.profile_id == T3_AUTHORIZED_ACCESS_PROFILE:
+        if registered_credential != config.credential_ref:
+            raise ValueError("registered credential reference mismatch")
+    elif registered_credential not in (None, config.credential_ref):
         raise ValueError("registered credential reference mismatch")
     source["credential_ref"] = config.credential_ref
     source["ssh_host_key"] = config.pinned_host_key
@@ -128,7 +146,7 @@ def compose_t3_runtime(
     catalog = ProfileCatalog.from_yaml(profiles_path)
     profile = catalog.get(proposal.profile_id)
     if (
-        profile.profile_id != T3_ACCESS_PROFILE
+        profile.profile_id not in {T3_ACCESS_PROFILE, T3_AUTHORIZED_ACCESS_PROFILE}
         or profile.tool_id != "t3-controlled-access"
         or not profile.approval_required
     ):
@@ -159,12 +177,28 @@ def compose_t3_runtime(
     gate = validate_t3_prerequisites(request, state, composed_assets)
     if gate.denied:
         raise ValueError("T3-A prerequisite validation denied")
+    enforcement_document = {
+        "asset": source,
+        "profile_fingerprint": profile_fingerprint(profile),
+        "policy": asdict(policy),
+        "runtime": config.model_dump(mode="json"),
+    }
+    enforcement_binding = hashlib.sha256(
+        json.dumps(
+            enforcement_document,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
     return T3RuntimeComposition(
         request=request,
         assets=composed_assets,
         policy=policy,
         config=config,
-        fingerprint=t3_access_approval_fingerprint(request),
+        fingerprint=t3_access_approval_fingerprint(
+            request,
+            enforcement_binding=enforcement_binding,
+        ),
     )
 
 
@@ -187,6 +221,7 @@ def build_t3_controller_and_executor(
         enablement=enablement,
         permitted_target=composition.assets.resolve(composition.request.source_asset_id)["target"],
         kill_switch=kill_switch,
+        approval_fingerprint=composition.fingerprint,
     )
     controller = Controller(
         runs_root=runs_root,

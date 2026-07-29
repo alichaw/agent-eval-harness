@@ -55,7 +55,8 @@ def test_run_id_is_deterministic_for_same_case(case_file):
     # same case file -> same hash suffix (the reproducibility anchor)
     id1 = make_run_id(case, case_file)
     id2 = make_run_id(case, case_file)
-    assert id1.split("-")[-1] == id2.split("-")[-1]  # hash suffix stable
+    assert id1 != id2
+    assert id1.split("-")[-2] == id2.split("-")[-2]  # case hash remains stable
 
 
 def test_manifest_written_even_though_agent_runs(tmp_path, case_file):

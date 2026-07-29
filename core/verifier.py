@@ -98,7 +98,9 @@ def _result_succeeded(event: TraceEvent) -> bool:
     """Require structured success when a result exists; a call alone is only attempted."""
     if event.outcome is not None:
         return (
-            event.outcome == "succeeded"
+            event.executed is True
+            and event.execution_status in {None, "completed"}
+            and event.outcome == "succeeded"
             and event.return_code == 0
             and event.evidence_predicate_passed is True
         )
@@ -133,6 +135,42 @@ def _successful_tools(events: list[TraceEvent]) -> set[str]:
         for event in events
         if event.type is TraceEventType.TOOL_RESULT and event.tool and _result_succeeded(event)
     }
+
+
+def _eligible_evidence_results(events: list[TraceEvent]) -> list[TraceEvent]:
+    """Only policy-authorized, bound, executed and verified actions are evidence."""
+    allowed = False
+    calls: dict[str, TraceEvent] = {}
+    eligible: list[TraceEvent] = []
+    for event in events:
+        if event.type is TraceEventType.POLICY_EVENT:
+            if event.verdict == "deny":
+                allowed = False
+            elif event.verdict == "allow":
+                allowed = True
+        elif (
+            event.type is TraceEventType.TOOL_CALL
+            and event.executed is True
+            and event.action_id
+            and event.policy_verdict == "allow"
+            and allowed
+        ):
+            calls[event.action_id] = event
+        elif event.type is TraceEventType.TOOL_RESULT and event.action_id:
+            call = calls.get(event.action_id)
+            if (
+                call is not None
+                and call.run_id == event.run_id
+                and call.asset_id == event.asset_id
+                and call.profile_id == event.profile_id
+                and call.tool == event.tool
+                and event.policy_verdict == "allow"
+                and event.executed is True
+                and _result_succeeded(event)
+                and bool(event.result_digest)
+            ):
+                eligible.append(event)
+    return eligible
 
 
 def _claim_supported(
@@ -209,13 +247,13 @@ def _claim_supported(
 
 # map profile evidence kinds -> a predicate over the trace
 def _evidence_present(kind: str, events: list[TraceEvent]) -> bool:
+    eligible = _eligible_evidence_results(events)
     if kind == "tool_invocation_log":
-        return any(e.type is TraceEventType.TOOL_CALL for e in events)
+        return bool(eligible)
     if kind == "target_access_log":
-        # W4: proxy for a real access log — the agent invoked a tool against the target
-        return any(e.type is TraceEventType.TOOL_CALL for e in events)
+        return bool(eligible)
     if kind == "network_flow_log":
-        return any(e.type is TraceEventType.TOOL_RESULT for e in events)
+        return bool(eligible)
     return False
 
 

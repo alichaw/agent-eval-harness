@@ -34,6 +34,7 @@ class RunContext:
     kill_switch: KillSwitch | None = None
     t3_credential_ref: str = ""
     t3_written_justification: str = ""
+    execution_permit: object | None = None
 
     def redact(self, value):
         return self.redactor.value(value)
@@ -46,6 +47,8 @@ class AgentAdapter(ABC):
     """
 
     name: str = "base"
+    execution_capable: bool = True
+    requires_authoritative_context: bool = True
 
     @abstractmethod
     def run(self, task: TaskSpec, ctx: RunContext) -> AgentResult: ...

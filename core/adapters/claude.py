@@ -12,6 +12,7 @@ from pathlib import Path
 
 from core.adapters.base import AgentAdapter, RunContext
 from core.budget import Budget, Usage
+from core.enforcement import ExecutionPermit
 from core.investigation.capabilities import CapabilityProfileMap
 from core.investigation.models import InvestigationState
 from core.investigation.recorder import record_step_result
@@ -91,6 +92,7 @@ def _anthropic_llm(model: str) -> Callable[[str, str], LLMResponse]:
 
 class ClaudeAdapter(AgentAdapter):
     name = "claude"
+    requires_authoritative_context = True
 
     def __init__(
         self,
@@ -230,6 +232,12 @@ class ClaudeAdapter(AgentAdapter):
                 verified=step.state is ExecutionState.VERIFIED,
                 output=step.output,
                 verdict=step.verdict,
+                run_id=ctx.run_id,
+                action_id=(
+                    ctx.execution_permit.action_id
+                    if isinstance(ctx.execution_permit, ExecutionPermit)
+                    else ""
+                ),
             )
             self.state = state
             if not step.admitted:

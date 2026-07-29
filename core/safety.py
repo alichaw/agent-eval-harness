@@ -52,6 +52,10 @@ def profile_fingerprint(profile) -> str:
         "risk_tier": profile.risk_tier.value,
         "interaction_mode": profile.interaction_mode.value,
         "approval_required": profile.approval_required,
+        "allowed_asset_types": profile.allowed_asset_types,
+        "internet_egress": profile.internet_egress,
+        "evidence_required": profile.evidence_required,
+        "forbidden_fields": profile.forbidden_fields,
     }
     canonical = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(canonical).hexdigest()

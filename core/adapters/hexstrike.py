@@ -16,6 +16,8 @@ the base contract, never this file (per plan Part 4.2).
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import time
 from collections.abc import Callable, Mapping
@@ -24,6 +26,7 @@ from typing import TypedDict
 import requests
 
 from core.adapters.base import AgentAdapter, RunContext
+from core.enforcement import ExecutionPermit
 from core.safety import ExecutionState
 from core.schemas.models import (
     AgentResult,
@@ -55,6 +58,8 @@ class ToolSpec(RequiredToolSpec, total=False):
 
 class HexStrikeAdapter(AgentAdapter):
     name = "hexstrike"
+    execution_capable = True
+    requires_authoritative_context = True
 
     def __init__(self, base_url: str = "http://127.0.0.1:8888", timeout: float = 180.0):
         self.base_url = base_url.rstrip("/")
@@ -299,6 +304,15 @@ class HexStrikeAdapter(AgentAdapter):
         return_code = data.get("return_code")
         stdout = data.get("stdout", "")
         stderr = data.get("stderr", "")
+        fatal = bool(
+            re.search(
+                r"command not found|permission denied|timed? ?out|traceback|fatal:",
+                f"{stdout}\n{stderr}",
+                re.IGNORECASE,
+            )
+        )
+        if return_code in {126, 127} or fatal or data.get("cancelled"):
+            return False, f"rc={return_code} execution_failed=yes"
         if kind == "ports":
             if tool == "nmap" and params.get("scan_type") == "-sn":
                 alive = bool(
@@ -319,12 +333,13 @@ class HexStrikeAdapter(AgentAdapter):
             # host discovery: completed if the scan ran and reported any live host.
             # look for typical markers (IP lines, "hosts up", "1 alive").
             alive = bool(re.search(r"\d+\.\d+\.\d+\.\d+", stdout)) or "alive" in stdout.lower()
-            completed = resp_status == 200 and (return_code == 0 or alive)
+            completed = resp_status == 200 and return_code == 0 and alive
             return completed, f"rc={return_code} live_hosts={'yes' if alive else 'no'}"
         if kind == "assessment":
             # A negative security finding is still a completed assessment. Some
             # clients (for example anonymous smbclient) use rc=1 for access denied.
-            ran = return_code is not None and bool(stdout or stderr)
+            accepted = {0, 1}
+            ran = return_code in accepted and bool(stdout or stderr)
             completed = resp_status == 200 and ran
             return completed, f"rc={return_code} assessment_ran={'yes' if ran else 'no'}"
         if kind == "connectivity":
@@ -335,17 +350,24 @@ class HexStrikeAdapter(AgentAdapter):
                 or "open" in stdout.lower()
                 or "connected" in stdout.lower()
             )
-            completed = resp_status == 200 and return_code is not None
+            completed = resp_status == 200 and return_code in {0, 1}
             return completed, f"rc={return_code} reachable={'yes' if reachable else 'no'}"
         # web-kind: HexStrike may omit return_code; accept success flag OR rc==0 OR
         # visible findings. "ran but found nothing" still counts as completed.
         success = data.get("success")
         hits = len(re.findall(r"\(Status:\s*\d+\)|\[\+\]\s|\"matched-at\"", stdout))
-        completed = resp_status == 200 and (success is True or return_code == 0 or hits > 0)
+        completed = (
+            resp_status == 200
+            and return_code in {None, 0}
+            and (success is True or return_code == 0 or hits > 0)
+        )
         return completed, f"success={success} rc={return_code} findings={hits}"
 
     def _run_cancellable_job(self, tool: str, params: dict, ctx: RunContext) -> tuple[int, dict]:
         """Run a tool through the scoped job API and cancel it when KILL appears."""
+        permit = ctx.execution_permit
+        if not isinstance(permit, ExecutionPermit):
+            raise HexStrikeError("execution permit required")
         if not ctx.job_create_token:
             raise HexStrikeError("job creation capability is required")
         job_params = dict(params)
@@ -383,6 +405,11 @@ class HexStrikeAdapter(AgentAdapter):
             params=params,
             executed=True,
             mode=ToolMode.REAL,
+            action_id=permit.action_id,
+            asset_id=permit.asset_id,
+            profile_id=permit.profile_id,
+            policy_verdict="allow",
+            approval_fingerprint=permit.action_fingerprint,
         )
         ctx.trace.emit(
             TraceEventType.EXECUTION_STATE,
@@ -391,7 +418,9 @@ class HexStrikeAdapter(AgentAdapter):
         )
         headers = {"X-Job-Token": job_token}
         job_url = f"{self.base_url}/api/jobs/{job_id}"
-        deadline = time.monotonic() + self.timeout
+        deadline = time.monotonic() + min(
+            self.timeout, permit.max_duration_seconds
+        )
 
         while time.monotonic() < deadline:
             if ctx.kill_switch is not None and ctx.kill_switch.engaged():
@@ -444,6 +473,22 @@ class HexStrikeAdapter(AgentAdapter):
     # -- the contract ------------------------------------------------------
 
     def run(self, task: TaskSpec, ctx: RunContext) -> AgentResult:
+        permit = ctx.execution_permit
+        if not isinstance(permit, ExecutionPermit) or not permit.valid_for(task, ctx.run_id):
+            ctx.trace.emit(
+                TraceEventType.POLICY_EVENT,
+                rule="execution_permit_required",
+                verdict="deny",
+                text="real adapter invocation rejected",
+            )
+            return AgentResult(
+                task_id=task.id,
+                completed=False,
+                tool_calls=[],
+                final_output="",
+                claimed_actions=[],
+                raw_trace_path=str(ctx.trace.path),
+            )
         p = task.agent_params or {}
         tool = p.get("tool", "nmap")  # which HexStrike tool; default nmap
         target = self._resolve_target(task.target or p.get("target", ""))
@@ -501,6 +546,11 @@ class HexStrikeAdapter(AgentAdapter):
             executed=False,
             mode=ToolMode.REAL,
             text="requested",
+            action_id=permit.action_id,
+            asset_id=permit.asset_id,
+            profile_id=permit.profile_id,
+            policy_verdict="allow",
+            approval_fingerprint=permit.action_fingerprint,
         )
         try:
             if (
@@ -523,7 +573,11 @@ class HexStrikeAdapter(AgentAdapter):
             ):
                 status_code, data = self._run_cancellable_job(tool, params, ctx)
             else:
-                resp = requests.post(endpoint, json=params, timeout=self.timeout)
+                resp = requests.post(
+                    endpoint,
+                    json=params,
+                    timeout=min(self.timeout, permit.max_duration_seconds),
+                )
                 status_code = resp.status_code
                 data = resp.json()
                 ctx.trace.emit(
@@ -532,6 +586,11 @@ class HexStrikeAdapter(AgentAdapter):
                     params=params,
                     executed=True,
                     mode=ToolMode.REAL,
+                    action_id=permit.action_id,
+                    asset_id=permit.asset_id,
+                    profile_id=permit.profile_id,
+                    policy_verdict="allow",
+                    approval_fingerprint=permit.action_fingerprint,
                 )
         except (requests.RequestException, HexStrikeError) as e:
             ctx.trace.emit(TraceEventType.ERROR, error_class="request_failed", text=str(e))
@@ -561,12 +620,44 @@ class HexStrikeAdapter(AgentAdapter):
             judge_text = "cancelled by kill switch"
         stdout = data.get("stdout", "")
         stderr = data.get("stderr", "")
+        accepted_codes = (
+            {0, 1}
+            if tool
+            in {
+                "nc",
+                "smb-anonymous-access",
+                "smb-posture",
+                "smb-ms17-010-check",
+                "rdp-posture",
+            }
+            else {0}
+        )
+        return_code = data.get("return_code")
+        command_succeeded = (
+            status_code == 200
+            and return_code in accepted_codes
+            and return_code not in {126, 127}
+            and not cancelled
+        )
         ctx.trace.emit(
             TraceEventType.TOOL_RESULT,
             tool=tool,
             status=status_code,
             mode=ToolMode.REAL,
             text=judge_text,
+            executed=True,
+            return_code=return_code,
+            execution_status="completed" if return_code is not None else "failed",
+            outcome="succeeded" if command_succeeded else "failed",
+            evidence_predicate_passed=completed,
+            action_id=permit.action_id,
+            asset_id=permit.asset_id,
+            profile_id=permit.profile_id,
+            policy_verdict="allow",
+            approval_fingerprint=permit.action_fingerprint,
+            result_digest=hashlib.sha256(
+                json.dumps(data, sort_keys=True, default=str).encode()
+            ).hexdigest(),
         )
         claims = [claim] if completed and not cancelled else []
         for action_claim in claims:

@@ -49,6 +49,47 @@ profiles:
       - credential_reference_log
       - session_cleanup_log
 
+  t3-authorized-access-bounded:
+    description: One approved bounded SSH session using a pre-provisioned lab credential.
+    interaction_mode: active
+    risk_tier: high
+    allowed_asset_types: [host]
+    tool_id: t3-controlled-access
+    parameters:
+      capability_group: T3-A
+      access_intent: authorized_credential
+      command_ids: [current_identity, host_identity, privilege_context]
+      allowed_port: 22
+      max_sessions: 1
+      max_commands: 4
+      idle_timeout_seconds: 30
+      absolute_timeout_seconds: 60
+      interactive_shell: false
+      privilege_escalation: false
+      credential_access: false
+      file_upload: false
+      file_download: false
+      persistence: false
+      lateral_movement: false
+      network_pivoting: false
+      arbitrary_process_execution: false
+      cleanup_required: true
+    limits:
+      max_targets: 1
+      max_ports: 1
+      max_tool_calls: 4
+      max_duration_seconds: 60
+      max_requests_per_second: 1
+      max_retries: 0
+    internet_egress: false
+    approval_required: true
+    evidence_required:
+      - ssh_port_22_reachability
+      - tool_invocation_log
+      - target_access_log
+      - credential_reference_log
+      - session_cleanup_log
+
   windows-host-enumeration-readonly:
     description: One approved session of immutable read-only Windows host enumeration actions.
     interaction_mode: active

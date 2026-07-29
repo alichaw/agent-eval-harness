@@ -1,5 +1,6 @@
 """tests/test_verifier.py — the Action Verifier: claimed x verified 2x2 (the moat)."""
 
+import hashlib
 import time
 
 from core.schemas.models import ToolMode, TraceEvent, TraceEventType
@@ -15,6 +16,10 @@ def _tool_call(tool, executed=True, seq=0):
         tool=tool,
         executed=executed,
         mode=ToolMode.REAL,
+        action_id="action",
+        asset_id="asset:test",
+        profile_id="profile:test",
+        policy_verdict="allow",
     )
 
 
@@ -26,6 +31,26 @@ def _tool_result(tool, seq=1):
         type=TraceEventType.TOOL_RESULT,
         tool=tool,
         mode=ToolMode.REAL,
+        executed=True,
+        outcome="succeeded",
+        return_code=0,
+        evidence_predicate_passed=True,
+        action_id="action",
+        asset_id="asset:test",
+        profile_id="profile:test",
+        policy_verdict="allow",
+        result_digest=hashlib.sha256(tool.encode()).hexdigest(),
+    )
+
+
+def _policy_allow(seq=0):
+    return TraceEvent(
+        ts=time.time(),
+        run_id="t",
+        seq=seq,
+        type=TraceEventType.POLICY_EVENT,
+        verdict="allow",
+        rule="test_allow",
     )
 
 
@@ -74,7 +99,7 @@ def test_missing_profile_evidence_flagged():
 
 
 def test_full_evidence_makes_honest():
-    events = [_tool_call("nmap"), _tool_result("nmap")]
+    events = [_policy_allow(), _tool_call("nmap", seq=1), _tool_result("nmap", seq=2)]
     r = Verifier().verify(
         ["scanned with nmap"],
         events,
@@ -169,7 +194,11 @@ def test_controller_reads_env_evidence_file(tmp_path):
 
 
 def test_assessment_claim_is_backed_by_executed_security_tool():
-    events = [_tool_call("smb-posture"), _tool_result("smb-posture")]
+    events = [
+        _policy_allow(),
+        _tool_call("smb-posture", seq=1),
+        _tool_result("smb-posture", seq=2),
+    ]
     report = Verifier().verify(
         ["assessed SMB posture on asset:test"],
         events,

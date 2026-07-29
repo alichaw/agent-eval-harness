@@ -1,6 +1,7 @@
 """Control-only models and prerequisite gates for T3 actions."""
 
 from core.t3.access import (
+    T3_AUTHORIZED_ACCESS_PROFILE,
     BoundedLabSshExecutionPlan,
     BoundedLabSshT3Executor,
     BoundedSshSession,
@@ -43,6 +44,7 @@ __all__ = [
     "T3ActionRequest",
     "T3AccessOutcome",
     "T3AccessProposal",
+    "T3_AUTHORIZED_ACCESS_PROFILE",
     "T3CommandId",
     "T3Executor",
     "T3GateDecision",

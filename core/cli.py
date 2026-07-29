@@ -157,8 +157,11 @@ def cmd_run(args) -> int:
 
 def cmd_approve(args) -> int:
     """Issue a short-lived approval without printing the token."""
+    from core.enforcement import (
+        effective_approval_fingerprint,
+        resolve_effective_action,
+    )
     from core.profiles import AssetRegistry, ProfileCatalog
-    from core.safety import profile_fingerprint
 
     authority = _approval_authority(args.approval_spent_dir)
     if authority is None:
@@ -167,17 +170,18 @@ def cmd_approve(args) -> int:
     catalog = ProfileCatalog.from_yaml(args.profiles)
     assets = AssetRegistry.from_yaml(args.assets)
     profile = catalog.get(args.profile_id)
-    assets.resolve(args.asset_id)
+    action = resolve_effective_action(catalog, assets, args.asset_id, args.profile_id)
     if not profile.approval_required:
         raise SystemExit("profile does not require approval")
 
     token = authority.issue(
         args.asset_id,
         args.profile_id,
-        profile_fingerprint(profile),
+        effective_approval_fingerprint(action),
         ttl_seconds=args.ttl_seconds,
         delay_seconds=args.delay_seconds,
         credential_id=args.credential_id,
+        action_fingerprint=action.fingerprint,
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -384,7 +388,11 @@ def _add_t3_proposal_arguments(parser) -> None:
     parser.add_argument(
         "--profile-id",
         required=True,
-        choices=["t3-access-bounded", "windows-host-enumeration-readonly"],
+        choices=[
+            "t3-access-bounded",
+            "t3-authorized-access-bounded",
+            "windows-host-enumeration-readonly",
+        ],
     )
     parser.add_argument("--objective", required=True)
     parser.add_argument(

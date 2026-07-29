@@ -7,10 +7,11 @@ import pytest
 
 from core.adapters.mock import MockAgent
 from core.controller import Controller
+from core.enforcement import effective_approval_fingerprint, resolve_effective_action
 from core.executor import gate
 from core.policy import Policy, Verdict
 from core.profiles import AssetRegistry, ProfileCatalog, ProfileError
-from core.safety import ApprovalAuthority, ExecutionState, KillSwitch, profile_fingerprint
+from core.safety import ApprovalAuthority, ExecutionState, KillSwitch
 from core.schemas.models import TraceEvent, TraceEventType
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -162,7 +163,12 @@ def test_direct_profile_accepts_bound_single_use_approval(tmp_path):
     token = authority.issue(
         "asset:t1-target",
         profile.profile_id,
-        profile_fingerprint(profile),
+        effective_approval_fingerprint(
+            resolve_effective_action(catalog, assets, "asset:t1-target", profile.profile_id)
+        ),
+        action_fingerprint=resolve_effective_action(
+            catalog, assets, "asset:t1-target", profile.profile_id
+        ).fingerprint,
     )
     controller = Controller(
         runs_root=tmp_path / "runs",

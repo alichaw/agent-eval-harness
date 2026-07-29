@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,12 @@ from pathlib import Path
 import yaml
 
 from core.adapters.base import AgentAdapter, RunContext
+from core.enforcement import (
+    authorize_execution,
+    effective_approval_fingerprint,
+    evaluate_effective_action,
+    resolve_effective_action,
+)
 from core.investigation.models import InvestigationState
 from core.policy import Policy
 from core.redaction import Redactor
@@ -31,7 +38,6 @@ from core.safety import (
     ApprovalError,
     ExecutionState,
     KillSwitch,
-    profile_fingerprint,
 )
 from core.schemas.models import SCHEMA_VERSION, AgentResult, TaskSpec, TraceEventType
 from core.t3.access import (
@@ -40,6 +46,7 @@ from core.t3.access import (
     T3_ACCESS_METHOD,
     T3_ACCESS_PLATFORM,
     T3_ACCESS_SCOPE,
+    T3_AUTHORIZED_ACCESS_PROFILE,
     BoundedLabSshExecutionPlan,
     BoundedLabSshT3Executor,
     T3AccessOutcome,
@@ -82,8 +89,18 @@ def _case_hash(path: str | Path) -> str:
 
 def make_run_id(case: TaskSpec, case_path: str | Path, now: datetime | None = None) -> str:
     now = now or datetime.now(timezone.utc)
-    stamp = now.strftime("%Y%m%d-%H%M%S")
-    return f"{stamp}-{case.id}-{_case_hash(case_path)}"
+    stamp = now.strftime("%Y%m%d-%H%M%S-%f")
+    return f"{stamp}-{case.id}-{_case_hash(case_path)}-{uuid.uuid4().hex[:12]}"
+
+
+def _create_run_dir(runs_root: Path, run_id: str) -> Path:
+    root = runs_root.resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    candidate = (root / run_id).resolve()
+    if candidate.parent != root:
+        raise ValueError("unsafe run directory")
+    candidate.mkdir(mode=0o700, exist_ok=False)
+    return candidate
 
 
 class Controller:
@@ -117,21 +134,13 @@ class Controller:
 
         if self.catalog is None or self.assets is None:
             raise ProfileError("profile-driven case but no catalog/assets loaded")
-        profile = self.catalog.get(case.profile_id)  # fail-closed on unknown
-        if profile.tool_id == "t3-controlled-access":
-            raise ProfileError("T3 profiles require the dedicated controlled-access route")
-        asset = self.assets.resolve(case.asset_id)  # fail-closed on unknown
-        params = dict(
-            profile.parameters,
-            ports=asset.get("ports", ""),
-        )
-        params.update(asset.get("tool_args", {}) or {})
-
+        action = resolve_effective_action(self.catalog, self.assets, case.asset_id, case.profile_id)
         return {
-            "tool": profile.tool_id,
-            "target": asset.get("target", ""),
-            "params": params,
-            "profile": profile,
+            "tool": action.tool,
+            "target": action.target,
+            "params": action.params_dict,
+            "profile": action.profile,
+            "action": action,
         }
 
     # optional; when set, every run is policy-gated
@@ -307,14 +316,28 @@ class Controller:
                 except ValueError:
                     bounded_commands = ()
                 lab_request_permitted = (
-                    request.stage.value == "initial_access"
+                    (
+                        (
+                            request.stage.value == "initial_access"
+                            and request.capability_id == T3_ACCESS_CAPABILITY
+                        )
+                        or (
+                            request.stage.value == "authorized_access"
+                            and request.capability_id == T3_AUTHORIZED_ACCESS_PROFILE
+                        )
+                    )
                     and request.destination_asset_id is None
-                    and request.capability_id == T3_ACCESS_CAPABILITY
                     and request.method == T3_ACCESS_METHOD
                     and 0 < len(bounded_commands) <= SESSION_POLICY.max_commands
                     and len(set(bounded_commands)) == len(bounded_commands)
                     and request.credential_ref is not None
                 )
+                credential_binding_permitted = (
+                    source.get("credential_ref") == request.credential_ref
+                    if request.stage.value == "authorized_access"
+                    else source.get("credential_ref") in (None, request.credential_ref)
+                )
+                lab_request_permitted = lab_request_permitted and credential_binding_permitted
             else:
                 try:
                     lab_observation = LabObservation(request.command_scope[0])
@@ -484,11 +507,13 @@ class Controller:
         )
 
         # F/G/H. The Controller computes and requires the exact action binding.
-        action_fingerprint = (
-            t3_access_approval_fingerprint(request)
-            if bounded_executor
-            else t3_action_fingerprint(request)
-        )
+        if bounded_executor_impl is not None:
+            action_fingerprint = (
+                bounded_executor_impl.approval_fingerprint
+                or t3_access_approval_fingerprint(request)
+            )
+        else:
+            action_fingerprint = t3_action_fingerprint(request)
         t3_runtime_binding_fingerprint = action_fingerprint
         if not action_fingerprint:
             emit("t3_fingerprint_invalid", Verdict.DENY.value, "T3 approval rejected")
@@ -564,6 +589,9 @@ class Controller:
                     duration_seconds=command_result.duration_seconds,
                     evidence_predicate_passed=command_result.evidence_predicate_passed,
                     executed=command_result.attempted,
+                    result_digest=hashlib.sha256(
+                        json.dumps(asdict(command_result), sort_keys=True).encode()
+                    ).hexdigest(),
                     text="fixed bounded observation recorded",
                 )
             return finish(
@@ -679,8 +707,7 @@ class Controller:
         case = load_case(case_path)
 
         run_id = make_run_id(case, case_path)
-        run_dir = self.runs_root / run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
+        run_dir = _create_run_dir(self.runs_root, run_id)
 
         redactor = Redactor.from_assets(self.assets)
         trace = TraceWriter(run_id, run_dir / "trace.jsonl", redactor=redactor)
@@ -712,6 +739,55 @@ class Controller:
         }
         (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
+        if getattr(agent, "requires_authoritative_context", False) and (
+            self.policy is None or self.catalog is None or self.assets is None
+        ):
+            ctx.trace.emit(
+                TraceEventType.POLICY_EVENT,
+                rule="enforcement_context_required",
+                verdict="deny",
+                text="real adapter requires policy, profiles, and assets",
+            )
+            result_doc = {
+                "run_id": run_id,
+                "completed": False,
+                "agent_reported_completed": False,
+                "elapsed_s": 0.0,
+                "task_id": case.id,
+                "policy_denied": True,
+                "policy_verdict": "deny",
+                "policy_rule": "enforcement_context_required",
+                "policy_detail": "authoritative enforcement inputs missing",
+                "tool_calls": [],
+                "claimed_actions": [],
+                "final_output_head": "",
+            }
+            (run_dir / "result.json").write_text(json.dumps(redactor.value(result_doc), indent=2))
+            return run_dir
+        if getattr(agent, "execution_capable", False) and case.tool_mode.value != "real":
+            ctx.trace.emit(
+                TraceEventType.POLICY_EVENT,
+                rule="execution_mode_mismatch",
+                verdict="deny",
+                text="real adapter rejected for non-real case",
+            )
+            result_doc = {
+                "run_id": run_id,
+                "completed": False,
+                "agent_reported_completed": False,
+                "elapsed_s": 0.0,
+                "task_id": case.id,
+                "policy_denied": True,
+                "policy_verdict": "deny",
+                "policy_rule": "execution_mode_mismatch",
+                "policy_detail": "case execution mode does not permit a real adapter",
+                "tool_calls": [],
+                "claimed_actions": [],
+                "final_output_head": "",
+            }
+            (run_dir / "result.json").write_text(json.dumps(redactor.value(result_doc), indent=2))
+            return run_dir
+
         # POLICY GATE — checked BEFORE the agent runs (defense in depth, application
         # layer, on top of W1's network firewall). Denials are recorded as
         # policy_event in the trace and the agent is NOT run: an unauthorised action
@@ -719,6 +795,29 @@ class Controller:
         # resolve a profile-driven case into concrete (tool, target, params) — the
         # model only named {asset_id, profile_id}; the Harness derives the rest.
         resolved = self._resolve_profile(case)  # None for legacy cases
+        if getattr(agent, "execution_capable", False) and resolved is None:
+            ctx.trace.emit(
+                TraceEventType.POLICY_EVENT,
+                rule="resolved_profile_required",
+                verdict="deny",
+                text="real adapter requires a resolved profile action",
+            )
+            result_doc = {
+                "run_id": run_id,
+                "completed": False,
+                "agent_reported_completed": False,
+                "elapsed_s": 0.0,
+                "task_id": case.id,
+                "policy_denied": True,
+                "policy_verdict": "deny",
+                "policy_rule": "resolved_profile_required",
+                "policy_detail": "real execution requires a resolved profile action",
+                "tool_calls": [],
+                "claimed_actions": [],
+                "final_output_head": "",
+            }
+            (run_dir / "result.json").write_text(json.dumps(redactor.value(result_doc), indent=2))
+            return run_dir
         if resolved is not None:
             ctx.trace.emit(
                 TraceEventType.EXECUTION_STATE,
@@ -753,29 +852,12 @@ class Controller:
             from core.policy import ActionRequest, Verdict
 
             if resolved is not None:
-                # RISK IS DECIDED BY THE PROFILE, NOT THE TOOL NAME. The same nmap is
-                # low-risk under an A1 profile (5 ports) and needs approval under A2
-                # (20 ports). So for profile-driven runs we do NOT use the policy's
-                # tool-level active_tools list; approval comes from the profile.
-                prof_policy = Policy(
-                    default=self.policy.default,
-                    allowed_tools=self.policy.allowed_tools,
-                    allowed_targets=self.policy.allowed_targets,
-                    denied_targets=self.policy.denied_targets,
-                    active_tools=[],
-                    max_cost_usd=self.policy.max_cost_usd,
-                    deny_flags=self.policy.deny_flags,
+                decision = evaluate_effective_action(
+                    resolved["action"],
+                    self.policy,
+                    credential_ref=case.t3_credential_ref,
+                    justification=case.t3_written_justification,
                 )
-                req = ActionRequest(
-                    tool=resolved["tool"],
-                    target=resolved["target"],
-                    params=resolved["params"],
-                    target_source="case",  # profile targets come from the asset registry = trusted
-                    t3_credential_ref=case.t3_credential_ref,
-                    t3_written_justification=case.t3_written_justification,
-                )
-                decision = prof_policy.check(req)
-                # a profile that requires approval short-circuits to REQUIRE_APPROVAL
                 if decision.verdict is Verdict.ALLOW and resolved["profile"].approval_required:
                     from core.policy import PolicyDecision
 
@@ -791,8 +873,9 @@ class Controller:
                                 self.approval_token,
                                 case.asset_id,
                                 case.profile_id,
-                                profile_fingerprint(resolved["profile"]),
+                                effective_approval_fingerprint(resolved["action"]),
                                 credential_id=case.t3_credential_ref,
+                                action_fingerprint=resolved["action"].fingerprint,
                             )
                         except ApprovalError as exc:
                             decision = PolicyDecision(Verdict.DENY, "approval_invalid", str(exc))
@@ -801,6 +884,7 @@ class Controller:
                                 TraceEventType.EXECUTION_STATE,
                                 state=ExecutionState.APPROVED.value,
                                 text="single-use approval consumed",
+                                approval_fingerprint=resolved["action"].fingerprint,
                             )
                             decision = PolicyDecision(
                                 Verdict.ALLOW,
@@ -857,6 +941,12 @@ class Controller:
                     "agent_params": execution_params,
                 }
             )
+            if getattr(agent, "execution_capable", False):
+                ctx.execution_permit = authorize_execution(
+                    resolved["action"],
+                    run_id=run_id,
+                    policy_rule=decision.rule,
+                )
 
         if resolved is not None:
             ctx.trace.emit(

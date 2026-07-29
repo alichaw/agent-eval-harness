@@ -5,6 +5,7 @@ import time
 import pytest
 
 from core.adapters.base import RunContext
+from core.enforcement import effective_approval_fingerprint, resolve_effective_action
 from core.executor import execute_profile
 from core.policy import Policy
 from core.profiles import AssetRegistry, ProfileCatalog
@@ -191,6 +192,7 @@ def test_delayed_approval_is_usable_once_cooling_off_elapses(tmp_path, monkeypat
     claims = authority.verify_and_consume(token, "asset:test", profile.profile_id, fingerprint)
     assert claims.asset_id == "asset:test"
 
+
 def test_delayed_approval_still_expires_after_its_post_delay_window(tmp_path, monkeypatch):
     profile = _profile(tmp_path)
     fingerprint = profile_fingerprint(profile)
@@ -298,7 +300,13 @@ def test_valid_approval_runs_once_and_emits_states(tmp_path):
     catalog, assets, policy, task = _execution_setup(tmp_path)
     profile = catalog.get("approved-scan")
     authority = ApprovalAuthority(b"x" * 32, tmp_path / "spent")
-    token = authority.issue("asset:test", profile.profile_id, profile_fingerprint(profile))
+    action = resolve_effective_action(catalog, assets, "asset:test", profile.profile_id)
+    token = authority.issue(
+        "asset:test",
+        profile.profile_id,
+        effective_approval_fingerprint(action),
+        action_fingerprint=action.fingerprint,
+    )
     context = _context(
         tmp_path,
         approval_authority=authority,

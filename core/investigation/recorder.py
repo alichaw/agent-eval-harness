@@ -20,6 +20,8 @@ def record_step_result(
     verified: bool,
     output: str,
     verdict: str = "allow",
+    run_id: str = "",
+    action_id: str = "",
     observed_at: datetime | None = None,
 ) -> InvestigationState:
     """Return a validated copy; admission alone is never treated as success."""
@@ -57,6 +59,16 @@ def record_step_result(
             error=None if verified else "executor reported failure",
         )
         item = extraction.evidence
+        item = item.model_copy(
+            update={
+                "run_id": run_id or None,
+                "action_id": action_id or None,
+                "profile_id": profile_id,
+                "policy_verdict": verdict,
+                "result_digest": raw_hash,
+                "verified": verified,
+            }
+        )
         new_services = extraction.services
     else:
         item = Evidence(
@@ -70,6 +82,12 @@ def record_step_result(
             observed_at=when,
             complete=verified,
             error=None if verified else "executor reported failure",
+            run_id=run_id or None,
+            action_id=action_id or None,
+            profile_id=profile_id,
+            policy_verdict=verdict,
+            result_digest=raw_hash,
+            verified=verified,
         )
         new_services = []
 

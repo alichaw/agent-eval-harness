@@ -29,9 +29,11 @@ from core.t3.executor import (
     T3Executor,
     valid_pinned_host_key,
 )
+from core.t3.gate import authorized_ssh_evidence_valid
 from core.t3.models import T3ActionRequest, T3Stage, t3_action_fingerprint
 
 T3_ACCESS_PROFILE = "t3-access-bounded"
+T3_AUTHORIZED_ACCESS_PROFILE = "t3-authorized-access-bounded"
 T3_ACCESS_CAPABILITY = T3_ACCESS_PROFILE
 T3_ACCESS_METHOD = "bounded-ssh-observation"
 T3_ACCESS_PURPOSE = "bounded remote access and privilege context verification"
@@ -96,13 +98,18 @@ class T3SessionPolicy:
 SESSION_POLICY = T3SessionPolicy()
 
 
-def t3_access_approval_fingerprint(request: T3ActionRequest) -> str:
+def t3_access_approval_fingerprint(
+    request: T3ActionRequest,
+    *,
+    enforcement_binding: str = "",
+) -> str:
     """Bind the action plus immutable purpose, effects, and session limits."""
     document = {
         "action_fingerprint": t3_action_fingerprint(request),
         "purpose": T3_ACCESS_PURPOSE,
         "intended_effects": ["authenticate_once", "fixed_read_only_observations"],
         "session_policy": asdict(SESSION_POLICY),
+        "enforcement_binding": enforcement_binding,
     }
     canonical = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(canonical).hexdigest()
@@ -114,7 +121,7 @@ class T3AccessProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     asset_id: str = Field(min_length=1, max_length=128)
-    profile_id: str = Field(pattern=r"^t3-access-bounded$")
+    profile_id: str = Field(pattern=r"^(t3-access-bounded|t3-authorized-access-bounded)$")
     objective: str = Field(min_length=1, max_length=256)
     command_ids: list[T3CommandId] = Field(min_length=1, max_length=T3_MAX_COMMANDS)
 
@@ -148,22 +155,36 @@ def materialize_t3_access_request(
     credential_ref = asset.get("credential_ref")
     if not isinstance(credential_ref, str) or not credential_ref.strip():
         raise ValueError("registered credential reference required")
-    suitable = [
-        finding
-        for finding in state.findings
-        if finding.asset_id == proposal.asset_id
-        and finding.status == "confirmed"
-        and finding.classification in {"confirmed_vulnerability", "exploitable"}
-    ]
-    if not suitable:
-        raise ValueError("confirmed initial-access prerequisite required")
-    finding_ids = sorted(finding.finding_id for finding in suitable)
-    evidence_ids = sorted(
-        {evidence_id for finding in suitable for evidence_id in finding.evidence_ids}
-    )
+    if proposal.profile_id == T3_ACCESS_PROFILE:
+        stage = T3Stage.INITIAL_ACCESS
+        suitable = [
+            finding
+            for finding in state.findings
+            if finding.asset_id == proposal.asset_id
+            and finding.status == "confirmed"
+            and finding.classification in {"confirmed_vulnerability", "exploitable"}
+        ]
+        if not suitable:
+            raise ValueError("confirmed initial-access prerequisite required")
+        finding_ids = sorted(finding.finding_id for finding in suitable)
+        evidence_ids = sorted(
+            {evidence_id for finding in suitable for evidence_id in finding.evidence_ids}
+        )
+    elif proposal.profile_id == T3_AUTHORIZED_ACCESS_PROFILE:
+        stage = T3Stage.AUTHORIZED_ACCESS
+        evidence_ids = sorted(
+            item.evidence_id
+            for item in state.evidence
+            if item.asset_id == proposal.asset_id and authorized_ssh_evidence_valid(item, state)
+        )
+        if not evidence_ids:
+            raise ValueError("complete SSH reachability prerequisite required")
+        finding_ids = []
+    else:
+        raise ValueError("unsupported T3 access profile")
     return T3ActionRequest(
         action_id=action_id,
-        stage=T3Stage.INITIAL_ACCESS,
+        stage=stage,
         source_asset_id=proposal.asset_id,
         capability_id=proposal.profile_id,
         method=T3_ACCESS_METHOD,
@@ -374,12 +395,14 @@ class BoundedLabSshT3Executor(T3Executor):
         enablement: str | None,
         permitted_target: str,
         kill_switch: KillSwitch | None = None,
+        approval_fingerprint: str = "",
     ):
         self.resolver = resolver
         self.transport = transport
         self.enabled = enablement == "true"
         self.permitted_target = permitted_target
         self.kill_switch = kill_switch
+        self.approval_fingerprint = approval_fingerprint
         self.invocation_count = 0
 
     def run(self, plan: BoundedLabSshExecutionPlan) -> T3AccessOutcome:

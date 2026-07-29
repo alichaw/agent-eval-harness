@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from core.investigation.models import Evidence, InvestigationState
 from core.profiles import AssetRegistry
 from core.t3.models import T3ActionRequest, T3Stage
+
+AUTHORIZED_EVIDENCE_MAX_AGE = timedelta(hours=24)
 
 
 @dataclass(frozen=True)
@@ -39,6 +42,51 @@ def _proves_low_privilege_access(item: Evidence) -> bool:
 
 def _proves_access(item: Evidence) -> bool:
     return item.facts.get("access_confirmed") is True or _proves_low_privilege_access(item)
+
+
+def proves_ssh_reachability(item: Evidence, state: InvestigationState) -> bool:
+    """Require structured TCP/22 SSH reachability, never an agent narrative."""
+    linked_services = [
+        service for service in state.services if service.evidence_id == item.evidence_id
+    ]
+    if any(
+        service.port == 22
+        and service.protocol.lower() == "tcp"
+        and service.state.lower() in {"open", "reachable"}
+        and (service.service or "").lower() in {"ssh", "openssh"}
+        for service in linked_services
+    ):
+        return True
+    facts = item.facts
+    ports = facts.get("open_ports")
+    port_22 = facts.get("port") == 22 or (
+        isinstance(ports, list) and any(value == 22 for value in ports)
+    )
+    return (
+        port_22
+        and str(facts.get("protocol", "tcp")).lower() == "tcp"
+        and str(facts.get("service", "")).lower() in {"ssh", "openssh"}
+        and str(facts.get("state", facts.get("status", ""))).lower()
+        in {"open", "reachable", "available"}
+    )
+
+
+def authorized_ssh_evidence_valid(
+    item: Evidence,
+    state: InvestigationState,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    reference_time = now or datetime.now(timezone.utc)
+    observed_at = item.observed_at
+    if observed_at.tzinfo is None:
+        return False
+    age = reference_time - observed_at
+    return (
+        _completed(item)
+        and timedelta(0) <= age <= AUTHORIZED_EVIDENCE_MAX_AGE
+        and proves_ssh_reachability(item, state)
+    )
 
 
 def validate_t3_prerequisites(
@@ -85,6 +133,13 @@ def validate_t3_prerequisites(
                     request.evidence_refs
                 ):
                     return _deny("finding_evidence_missing")
+        elif request.stage is T3Stage.AUTHORIZED_ACCESS:
+            if request.finding_refs:
+                return _deny("authorized_access_finding_not_allowed")
+            if not selected or not any(
+                authorized_ssh_evidence_valid(item, state) for item in selected
+            ):
+                return _deny("ssh_reachability_not_proven")
         elif request.stage is T3Stage.PRIVILEGE_ESCALATION:
             if not any(_proves_low_privilege_access(item) for item in selected):
                 return _deny("low_privilege_access_not_proven")

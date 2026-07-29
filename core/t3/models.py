@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 class T3Stage(str, Enum):
     INITIAL_ACCESS = "initial_access"
+    AUTHORIZED_ACCESS = "authorized_access"
     WINDOWS_ENUMERATION = "windows_enumeration"
     PRIVILEGE_ESCALATION = "privilege_escalation"
     LATERAL_MOVEMENT = "lateral_movement"
@@ -88,7 +89,11 @@ class T3ActionRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_stage_requirements(self) -> T3ActionRequest:
-        if self.stage in {T3Stage.INITIAL_ACCESS, T3Stage.PRIVILEGE_ESCALATION}:
+        if self.stage in {
+            T3Stage.INITIAL_ACCESS,
+            T3Stage.AUTHORIZED_ACCESS,
+            T3Stage.PRIVILEGE_ESCALATION,
+        }:
             if self.destination_asset_id is not None:
                 raise ValueError(f"{self.stage.value} does not accept destination_asset_id")
         elif self.stage is T3Stage.LATERAL_MOVEMENT:

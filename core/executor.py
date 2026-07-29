@@ -13,9 +13,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from core.adapters.base import RunContext
-from core.policy import ActionRequest, Policy, PolicyDecision, Verdict
+from core.enforcement import (
+    authorize_execution,
+    effective_approval_fingerprint,
+    evaluate_effective_action,
+    resolve_effective_action,
+)
+from core.policy import Policy, PolicyDecision, Verdict
 from core.profiles import AssetRegistry, ProfileCatalog, ProfileError
-from core.safety import ApprovalError, ExecutionState, profile_fingerprint
+from core.safety import ApprovalError, ExecutionState
 from core.schemas.models import AgentResult, TaskSpec, TraceEventType
 
 
@@ -40,57 +46,26 @@ def gate(
     """Resolve + policy-check a proposed profile. Returns (decision, resolved|None).
     Fail-closed: unknown profile/asset -> deny."""
     try:
-        profile = catalog.get(profile_id)
-        asset = assets.resolve(asset_id)
+        action = resolve_effective_action(catalog, assets, asset_id, profile_id)
     except ProfileError as e:
         return PolicyDecision(Verdict.DENY, "unknown_profile_or_asset", str(e)), None
 
-    # merge params: profile template + asset's ports + asset's target-specific
-    # overrides (tool_args). This lets per-target quirks (e.g. gobuster's
-    # --exclude-length, which differs per site) live on the ASSET, so the same profile
-    # works across targets. Profile stays the reusable capability; asset carries the
-    # target's specifics. asset tool_args win on key conflicts.
-    merged = dict(profile.parameters, ports=asset.get("ports", ""))
-    tool_args = asset.get("tool_args", {}) or {}
-    scoped_args = tool_args.get(profile.tool_id)
-    if isinstance(scoped_args, dict):
-        merged.update(scoped_args)
-    elif profile.tool_id == "gobuster" and all(
-        not isinstance(value, dict) for value in tool_args.values()
-    ):
-        # Backward compatibility for existing local Gobuster-only asset files.
-        merged.update(tool_args)
     resolved = {
-        "tool": profile.tool_id,
-        "target": asset.get("target", ""),
-        "params": merged,
-        "profile": profile,
+        "tool": action.tool,
+        "target": action.target,
+        "params": action.params_dict,
+        "profile": action.profile,
+        "action": action,
     }
     if policy is None:
-        return PolicyDecision(Verdict.ALLOW, "no_policy"), resolved
+        return PolicyDecision(Verdict.DENY, "policy_required"), resolved
 
-    # risk decided by the profile, not the tool name (same rule as the controller)
-    prof_policy = Policy(
-        default=policy.default,
-        allowed_tools=policy.allowed_tools,
-        allowed_targets=policy.allowed_targets,
-        denied_targets=policy.denied_targets,
-        active_tools=[],
-        max_cost_usd=policy.max_cost_usd,
-        deny_flags=policy.deny_flags,
-    )
-    req = ActionRequest(
-        tool=resolved["tool"],
-        target=resolved["target"],
-        params=resolved["params"],
-        target_source="case",
-    )
-    decision = prof_policy.check(req)
-    if decision.verdict is Verdict.ALLOW and profile.approval_required:
+    decision = evaluate_effective_action(action, policy)
+    if decision.verdict is Verdict.ALLOW and action.profile.approval_required:
         decision = PolicyDecision(
             Verdict.REQUIRE_APPROVAL,
             "profile_needs_approval",
-            f"profile '{profile_id}' (risk={profile.risk_tier.value})",
+            f"profile '{profile_id}' (risk={action.profile.risk_tier.value})",
         )
     return decision, resolved
 
@@ -140,8 +115,9 @@ def execute_profile(
                 ctx.approval_token,
                 asset_id,
                 profile_id,
-                profile_fingerprint(resolved["profile"]),
+                effective_approval_fingerprint(resolved["action"]),
                 credential_id=getattr(ctx, "t3_credential_ref", ""),
+                action_fingerprint=resolved["action"].fingerprint,
             )
         except ApprovalError as exc:
             ctx.trace.emit(
@@ -158,7 +134,12 @@ def execute_profile(
                 detail=str(exc),
                 state=ExecutionState.BLOCKED,
             )
-        _emit_state(ctx, ExecutionState.APPROVED, "single-use approval consumed")
+        ctx.trace.emit(
+            TraceEventType.EXECUTION_STATE,
+            state=ExecutionState.APPROVED.value,
+            text="single-use approval consumed",
+            approval_fingerprint=resolved["action"].fingerprint,
+        )
     elif decision.verdict is not Verdict.ALLOW:
         _emit_state(ctx, ExecutionState.BLOCKED, decision.rule)
         return StepResult(
@@ -193,6 +174,11 @@ def execute_profile(
             "target": resolved["target"],
             "agent_params": sub_params,
         }
+    )
+    ctx.execution_permit = authorize_execution(
+        resolved["action"],
+        run_id=ctx.run_id,
+        policy_rule=decision.rule,
     )
     _emit_state(ctx, ExecutionState.RUNNING)
     result: AgentResult = executor_adapter.run(sub, ctx)
