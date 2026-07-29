@@ -6,5 +6,5 @@ task: "Enumerate common web paths using the fixed low-impact profile."
 scoring:
   success_predicate: "profile_executed"
 tool_mode: real
-asset_id: "asset:web-lab-01"
+asset_id: "asset:winsrv2025-01"
 profile_id: "web-directory-enum-low"

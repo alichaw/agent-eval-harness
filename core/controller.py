@@ -34,6 +34,18 @@ from core.safety import (
     profile_fingerprint,
 )
 from core.schemas.models import SCHEMA_VERSION, AgentResult, TaskSpec, TraceEventType
+from core.t3.access import (
+    SESSION_POLICY,
+    T3_ACCESS_CAPABILITY,
+    T3_ACCESS_METHOD,
+    T3_ACCESS_PLATFORM,
+    T3_ACCESS_SCOPE,
+    BoundedLabSshExecutionPlan,
+    BoundedLabSshT3Executor,
+    T3AccessOutcome,
+    T3CommandId,
+    t3_access_approval_fingerprint,
+)
 from core.t3.executor import (
     LAB_EXECUTION_SCOPE,
     LAB_PLATFORM,
@@ -106,6 +118,8 @@ class Controller:
         if self.catalog is None or self.assets is None:
             raise ProfileError("profile-driven case but no catalog/assets loaded")
         profile = self.catalog.get(case.profile_id)  # fail-closed on unknown
+        if profile.tool_id == "t3-controlled-access":
+            raise ProfileError("T3 profiles require the dedicated controlled-access route")
         asset = self.assets.resolve(case.asset_id)  # fail-closed on unknown
         params = dict(
             profile.parameters,
@@ -143,15 +157,34 @@ class Controller:
         redactor = Redactor.from_assets(self.assets, redact_credentials=True)
         trace = TraceWriter(run_id, run_dir / "trace.jsonl", redactor=redactor)
 
-        lab_executor = type(executor) is LabSshT3Executor
-        mock_executor = type(executor) is MockT3Executor
+        bounded_executor_impl = (
+            executor
+            if isinstance(executor, BoundedLabSshT3Executor)
+            and type(executor) is BoundedLabSshT3Executor
+            else None
+        )
+        lab_executor_impl = (
+            executor
+            if isinstance(executor, LabSshT3Executor) and type(executor) is LabSshT3Executor
+            else None
+        )
+        mock_executor_impl = (
+            executor
+            if isinstance(executor, MockT3Executor) and type(executor) is MockT3Executor
+            else None
+        )
+        bounded_executor = bounded_executor_impl is not None
+        lab_executor = lab_executor_impl is not None
+        mock_executor = mock_executor_impl is not None
         manifest = {
             "run_id": run_id,
             "created_utc": datetime.now(timezone.utc).isoformat(),
-            "agent": "lab-ssh-t3" if lab_executor else "mock-t3",
+            "agent": "bounded-lab-ssh-t3"
+            if bounded_executor
+            else ("lab-ssh-t3" if lab_executor else "mock-t3"),
             "schema_version": SCHEMA_VERSION,
             "policy_gated": True,
-            "mock_only": not lab_executor,
+            "mock_only": not (lab_executor or bounded_executor),
         }
         (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
@@ -171,7 +204,7 @@ class Controller:
             control_authorized: bool = False,
             approval_consumed: bool = False,
             executor_invoked: bool = False,
-            outcome: MockT3Outcome | LabT3Outcome | None = None,
+            outcome: MockT3Outcome | LabT3Outcome | T3AccessOutcome | None = None,
         ) -> Path:
             emit(
                 "t3_final_result",
@@ -185,21 +218,20 @@ class Controller:
                 "rule": rule,
                 "control_authorized": control_authorized,
                 "approval_consumed": approval_consumed,
+                "approval_succeeded": approval_consumed,
                 "mock_executor_invoked": executor_invoked and mock_executor,
-                "lab_executor_invoked": executor_invoked and lab_executor,
+                "lab_executor_invoked": executor_invoked and (lab_executor or bounded_executor),
                 "real_action_performed": (
                     outcome.real_action_performed if outcome is not None else False
                 ),
-                "mock_outcome": (
-                    asdict(outcome) if isinstance(outcome, MockT3Outcome) else None
-                ),
+                "mock_outcome": (asdict(outcome) if isinstance(outcome, MockT3Outcome) else None),
                 "lab_outcome": (
-                    outcome.result_document() if isinstance(outcome, LabT3Outcome) else None
+                    outcome.result_document()
+                    if isinstance(outcome, (LabT3Outcome, T3AccessOutcome))
+                    else None
                 ),
             }
-            (run_dir / "result.json").write_text(
-                json.dumps(redactor.value(result), indent=2)
-            )
+            (run_dir / "result.json").write_text(json.dumps(redactor.value(result), indent=2))
             return run_dir
 
         # A. Revalidate model instances too: model_copy(update=...) can bypass checks.
@@ -213,10 +245,10 @@ class Controller:
             return finish(completed=False, status="denied", rule="t3_request_invalid")
         emit("t3_request_accepted", Verdict.ALLOW.value, "T3 request accepted for evaluation")
 
-        if not (mock_executor or lab_executor):
+        if not (mock_executor or lab_executor or bounded_executor):
             emit("t3_executor_required", Verdict.DENY.value, "T3 executor rejected")
             return finish(completed=False, status="denied", rule="t3_executor_required")
-        if lab_executor:
+        if lab_executor or bounded_executor:
             emit("lab_executor_selected", Verdict.ALLOW.value, "Lab executor selected")
 
         if self.kill_switch is not None and self.kill_switch.engaged():
@@ -239,8 +271,16 @@ class Controller:
         source_target = source_target_value.strip()
 
         lab_observation = None
-        if lab_executor:
-            if not executor.enabled:
+        bounded_commands: tuple[T3CommandId, ...] = ()
+        if lab_executor or bounded_executor:
+            enabled = (
+                bounded_executor_impl.enabled
+                if bounded_executor_impl is not None
+                else lab_executor_impl.enabled
+                if lab_executor_impl is not None
+                else False
+            )
+            if not enabled:
                 emit(
                     "lab_execution_disabled",
                     Verdict.DENY.value,
@@ -256,28 +296,58 @@ class Controller:
                 Verdict.ALLOW.value,
                 "Lab execution explicitly enabled",
             )
-            try:
-                lab_observation = LabObservation(request.command_scope[0])
-            except (IndexError, ValueError):
-                lab_observation = None
-            lab_request_permitted = (
-                request.stage.value == "initial_access"
-                and request.destination_asset_id is None
-                and request.capability_id == LAB_SSH_CAPABILITY
-                and request.method == LAB_SSH_METHOD
-                and len(request.command_scope) == 1
-                and lab_observation is not None
-                and request.credential_ref is not None
-            )
+            if bounded_executor_impl is not None:
+                try:
+                    bounded_commands = tuple(T3CommandId(value) for value in request.command_scope)
+                except ValueError:
+                    bounded_commands = ()
+                lab_request_permitted = (
+                    request.stage.value == "initial_access"
+                    and request.destination_asset_id is None
+                    and request.capability_id == T3_ACCESS_CAPABILITY
+                    and request.method == T3_ACCESS_METHOD
+                    and 0 < len(bounded_commands) <= SESSION_POLICY.max_commands
+                    and len(set(bounded_commands)) == len(bounded_commands)
+                    and request.credential_ref is not None
+                )
+            else:
+                try:
+                    lab_observation = LabObservation(request.command_scope[0])
+                except (IndexError, ValueError):
+                    lab_observation = None
+                lab_request_permitted = (
+                    request.stage.value == "initial_access"
+                    and request.destination_asset_id is None
+                    and request.capability_id == LAB_SSH_CAPABILITY
+                    and request.method == LAB_SSH_METHOD
+                    and len(request.command_scope) == 1
+                    and lab_observation is not None
+                    and request.credential_ref is not None
+                )
             asset_permitted = (
                 source.get("asset_type") == "host"
-                and source.get("execution_scope") == LAB_EXECUTION_SCOPE
-                and source.get("platform") == LAB_PLATFORM
+                and source.get("execution_scope")
+                == (T3_ACCESS_SCOPE if bounded_executor else LAB_EXECUTION_SCOPE)
+                and source.get("platform")
+                == (T3_ACCESS_PLATFORM if bounded_executor else LAB_PLATFORM)
                 and type(source.get("ssh_port")) is int
                 and source.get("ssh_port") == LAB_SSH_PORT
                 and valid_pinned_host_key(source.get("ssh_host_key"))
-                and source_target == executor.permitted_target
-                and 0 < executor.timeout_seconds <= 10
+                and source_target
+                == (
+                    bounded_executor_impl.permitted_target
+                    if bounded_executor_impl is not None
+                    else lab_executor_impl.permitted_target
+                    if lab_executor_impl is not None
+                    else ""
+                )
+                and (
+                    bounded_executor
+                    or (
+                        lab_executor_impl is not None
+                        and 0 < lab_executor_impl.timeout_seconds <= 10
+                    )
+                )
                 and lab_target_is_locally_permitted(source_target)
             )
             if not lab_request_permitted or not asset_permitted:
@@ -362,6 +432,17 @@ class Controller:
         emit("t3_source_authorized", Verdict.ALLOW.value, "Source policy authorization accepted")
 
         if destination is not None:
+            if destination_target is None:
+                emit(
+                    "t3_destination_target_invalid",
+                    Verdict.DENY.value,
+                    "Destination asset rejected",
+                )
+                return finish(
+                    completed=False,
+                    status="denied",
+                    rule="t3_destination_target_invalid",
+                )
             destination_decision = self.policy.check_t3(
                 T3PolicyRequest(
                     capability_id=request.capability_id,
@@ -398,7 +479,11 @@ class Controller:
         )
 
         # F/G/H. The Controller computes and requires the exact action binding.
-        action_fingerprint = t3_action_fingerprint(request)
+        action_fingerprint = (
+            t3_access_approval_fingerprint(request)
+            if bounded_executor
+            else t3_action_fingerprint(request)
+        )
         if not action_fingerprint:
             emit("t3_fingerprint_invalid", Verdict.DENY.value, "T3 approval rejected")
             return finish(completed=False, status="denied", rule="t3_fingerprint_invalid")
@@ -412,6 +497,7 @@ class Controller:
                 request.source_asset_id,
                 request.capability_id,
                 action_fingerprint,
+                credential_id=request.credential_ref or "" if bounded_executor else "",
                 action_fingerprint=action_fingerprint,
             )
         except Exception:  # noqa: BLE001 - approval details must not escape
@@ -420,7 +506,71 @@ class Controller:
         emit("t3_approval_verified", Verdict.ALLOW.value, "T3 approval consumed")
 
         # I/J/K. Only a narrow immutable plan crosses the selected executor boundary.
-        if lab_executor:
+        if bounded_executor_impl is not None:
+            trace.emit(
+                TraceEventType.EXECUTION_STATE,
+                rule="t3_session_execution_started",
+                state=ExecutionState.RUNNING.value,
+                text="Bounded T3-A session started",
+            )
+            bounded_plan = BoundedLabSshExecutionPlan(
+                action_id=request.action_id,
+                source_asset_id=request.source_asset_id,
+                profile_id=request.capability_id,
+                target=source_target,
+                port=LAB_SSH_PORT,
+                credential_handle=request.credential_ref or "",
+                pinned_host_key=source["ssh_host_key"],
+                command_ids=bounded_commands,
+            )
+            try:
+                access_outcome = bounded_executor_impl.run(bounded_plan)
+                if not isinstance(access_outcome, T3AccessOutcome):
+                    raise TypeError("invalid bounded T3 outcome")
+            except Exception:  # noqa: BLE001
+                emit("t3_session_failed", Verdict.DENY.value, "Bounded T3-A session failed")
+                return finish(
+                    completed=False,
+                    status="failed",
+                    rule="t3_session_failed",
+                    control_authorized=True,
+                    approval_consumed=True,
+                    executor_invoked=True,
+                )
+            for code in access_outcome.trace_codes:
+                emit(
+                    code,
+                    Verdict.DENY.value
+                    if code.endswith(("_failed", "_denied"))
+                    else Verdict.ALLOW.value,
+                    "Bounded T3-A stage recorded",
+                )
+            for command_result in access_outcome.command_results:
+                trace.emit(
+                    TraceEventType.TOOL_RESULT,
+                    tool="t3-fixed-observation",
+                    command_id=command_result.command_id,
+                    attempted=command_result.attempted,
+                    return_code=command_result.return_code,
+                    outcome=command_result.outcome,
+                    sanitized_stdout=command_result.sanitized_stdout,
+                    sanitized_stderr="",
+                    duration_seconds=command_result.duration_seconds,
+                    evidence_predicate_passed=command_result.evidence_predicate_passed,
+                    executed=command_result.attempted,
+                    text="fixed bounded observation recorded",
+                )
+            return finish(
+                completed=access_outcome.completed,
+                status=access_outcome.status,
+                rule=access_outcome.rule,
+                control_authorized=True,
+                approval_consumed=True,
+                executor_invoked=True,
+                outcome=access_outcome,
+            )
+
+        if lab_executor_impl is not None:
             assert lab_observation is not None
             trace.emit(
                 TraceEventType.EXECUTION_STATE,
@@ -428,7 +578,7 @@ class Controller:
                 state=ExecutionState.RUNNING.value,
                 text="Lab observation started",
             )
-            plan = LabSshExecutionPlan(
+            lab_plan = LabSshExecutionPlan(
                 action_id=request.action_id,
                 source_asset_id=request.source_asset_id,
                 capability_id=request.capability_id,
@@ -436,11 +586,11 @@ class Controller:
                 target=source_target,
                 port=LAB_SSH_PORT,
                 credential_handle=request.credential_ref or "",
-                timeout_seconds=executor.timeout_seconds,
+                timeout_seconds=lab_executor_impl.timeout_seconds,
                 pinned_host_key=source["ssh_host_key"],
             )
             try:
-                lab_outcome = executor.run(plan)
+                lab_outcome = lab_executor_impl.run(lab_plan)
                 if not isinstance(lab_outcome, LabT3Outcome):
                     raise TypeError("invalid lab T3 outcome")
             except Exception:  # noqa: BLE001 - consumed approvals are never retried
@@ -460,11 +610,7 @@ class Controller:
             for code in lab_outcome.trace_codes:
                 emit(
                     code,
-                    (
-                        Verdict.DENY.value
-                        if code.endswith("_failed")
-                        else Verdict.ALLOW.value
-                    ),
+                    (Verdict.DENY.value if code.endswith("_failed") else Verdict.ALLOW.value),
                     "Lab execution stage recorded",
                 )
             completed = lab_outcome.status == "lab_observation_completed"
@@ -485,7 +631,9 @@ class Controller:
             text="Mock T3 execution started",
         )
         try:
-            outcome = executor.run(MockT3ExecutionPlan.from_request(request))
+            if mock_executor_impl is None:
+                raise TypeError("invalid mock T3 executor")
+            outcome = mock_executor_impl.run(MockT3ExecutionPlan.from_request(request))
             if not isinstance(outcome, MockT3Outcome):
                 raise TypeError("invalid mock T3 outcome")
         except Exception:  # noqa: BLE001 - consumed approvals are never retried

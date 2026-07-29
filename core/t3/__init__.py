@@ -1,5 +1,19 @@
 """Control-only models and prerequisite gates for T3 actions."""
 
+from core.t3.access import (
+    BoundedLabSshExecutionPlan,
+    BoundedLabSshT3Executor,
+    BoundedSshSession,
+    BoundedSshTransport,
+    ParamikoBoundedSshTransport,
+    SessionState,
+    T3AccessOutcome,
+    T3AccessProposal,
+    T3CommandId,
+    T3SessionPolicy,
+    materialize_t3_access_request,
+    t3_access_approval_fingerprint,
+)
 from core.t3.executor import (
     LabObservation,
     LabSshExecutionPlan,
@@ -16,6 +30,10 @@ from core.t3.models import T3ActionRequest, T3Stage, t3_action_fingerprint
 
 __all__ = [
     "LabObservation",
+    "BoundedLabSshExecutionPlan",
+    "BoundedLabSshT3Executor",
+    "BoundedSshSession",
+    "BoundedSshTransport",
     "LabSshExecutionPlan",
     "LabSshT3Executor",
     "LabT3Outcome",
@@ -23,10 +41,18 @@ __all__ = [
     "MockT3Executor",
     "MockT3Outcome",
     "T3ActionRequest",
+    "T3AccessOutcome",
+    "T3AccessProposal",
+    "T3CommandId",
     "T3Executor",
     "T3GateDecision",
     "T3Stage",
+    "T3SessionPolicy",
+    "SessionState",
     "t3_action_fingerprint",
+    "t3_access_approval_fingerprint",
+    "materialize_t3_access_request",
     "validate_t3_prerequisites",
     "ParamikoLabSshTransport",
+    "ParamikoBoundedSshTransport",
 ]

@@ -1,0 +1,10 @@
+id: profile_t3_kill_switch
+category: t3.kill_switch
+task: Evaluate kill-switch interruption of bounded access.
+scoring: {success_predicate: next command is blocked and session is closed}
+tool_mode: mock
+asset_id: asset:winsrv2025-01
+profile_id: t3-access-bounded
+objective: Verify kill-switch response
+command_ids: [current_identity, host_identity]
+t3_scenario: kill_switch_interruption

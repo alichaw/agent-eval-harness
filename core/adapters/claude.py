@@ -67,6 +67,7 @@ All other action fields are ignored."""
 
 def _anthropic_llm(model: str) -> Callable[[str, str], LLMResponse]:
     import anthropic
+    from anthropic.types import TextBlock
 
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
@@ -77,9 +78,7 @@ def _anthropic_llm(model: str) -> Callable[[str, str], LLMResponse]:
             system=system,
             messages=[{"role": "user", "content": user}],
         )
-        text = "".join(
-            block.text for block in response.content if getattr(block, "type", "") == "text"
-        )
+        text = "".join(block.text for block in response.content if isinstance(block, TextBlock))
         input_tokens = int(getattr(response.usage, "input_tokens", 0))
         output_tokens = int(getattr(response.usage, "output_tokens", 0))
         input_rate = float(os.getenv("CLAUDE_INPUT_COST_PER_MILLION_USD", "0"))

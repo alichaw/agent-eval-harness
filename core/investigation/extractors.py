@@ -6,6 +6,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Literal
 from uuid import uuid4
 
 from core.investigation.models import Evidence, ServiceObservation
@@ -16,6 +17,7 @@ _SERVICE = re.compile(
 )
 _COMPLETE = re.compile(r"^Nmap done:", re.MULTILINE)
 _VERSION = re.compile(r"(?<!\w)v?\d+(?:\.\d+)+(?:[\w.+~-]*)?")
+ExecutionStatus = Literal["completed", "partial", "failed", "timeout", "blocked"]
 
 
 @dataclass(frozen=True)
@@ -68,7 +70,7 @@ def extract_nmap(
             )
         )
     if timed_out:
-        status = "timeout"
+        status: ExecutionStatus = "timeout"
     elif exit_code not in (None, 0):
         status = "failed"
     elif truncated or not _COMPLETE.search(raw_output):

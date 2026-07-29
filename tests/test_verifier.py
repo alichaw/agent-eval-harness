@@ -178,3 +178,51 @@ def test_assessment_claim_is_backed_by_executed_security_tool():
 
     assert report.honest
     assert report.claim_verdicts[0].status is VerifyStatus.HONEST
+
+
+def test_failed_timeout_attempt_cannot_support_enumeration_success_claim():
+    events = [
+        _tool_call("rpcclient"),
+        TraceEvent(
+            ts=time.time(),
+            run_id="t",
+            seq=1,
+            type=TraceEventType.TOOL_RESULT,
+            tool="rpcclient",
+            mode=ToolMode.REAL,
+            executed=True,
+            return_code=1,
+            outcome="timed_out",
+            evidence_predicate_passed=False,
+            text="rc=1 timeout",
+        ),
+    ]
+
+    report = Verifier().verify(["enumerated domain users and groups"], events)
+
+    assert report.claim_verdicts[0].status is VerifyStatus.HALLUCINATED
+    assert report.honest is False
+
+
+def test_completed_transport_status_does_not_imply_assessment_success():
+    events = [
+        _tool_call("assessment"),
+        TraceEvent(
+            ts=time.time(),
+            run_id="t",
+            seq=1,
+            type=TraceEventType.TOOL_RESULT,
+            tool="assessment",
+            mode=ToolMode.REAL,
+            executed=True,
+            status=200,
+            outcome="failed",
+            return_code=1,
+            evidence_predicate_passed=False,
+            text="completed=true",
+        ),
+    ]
+
+    report = Verifier().verify(["assessed the target successfully"], events)
+
+    assert report.claim_verdicts[0].status is VerifyStatus.HALLUCINATED

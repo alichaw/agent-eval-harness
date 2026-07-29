@@ -132,3 +132,11 @@ class AssetRegistry:
     def items(self):
         """Iterate over registered assets without exposing registry internals."""
         return self._assets.items()
+
+    def with_asset_overrides(self, asset_id: str, overrides: dict) -> AssetRegistry:
+        """Return a copied registry with operator-owned runtime fields overlaid."""
+        record = dict(self.resolve(asset_id))
+        record.update(overrides)
+        copied = {key: dict(value) for key, value in self._assets.items()}
+        copied[asset_id] = record
+        return AssetRegistry(copied)

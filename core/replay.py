@@ -24,6 +24,49 @@ def replay_run(run_dir: str | Path) -> dict:
     # open/closed port state; a hard error means not completed.
     had_error = any(e.type is TraceEventType.ERROR for e in events)
     tool_results = [e for e in events if e.type is TraceEventType.TOOL_RESULT]
+    rules = {event.rule for event in events if event.rule}
+    t3_access = "credential_lease_created" in rules or "session_requested" in rules
+    if t3_access:
+        commands = [
+            event
+            for event in tool_results
+            if event.tool == "t3-fixed-observation"
+        ]
+        approval = "t3_approval_verified" in rules
+        authenticated = "authentication_succeeded" in rules
+        closed = "session_closed" in rules
+        lease_invalidated = "credential_lease_invalidated" in rules
+        cleanup = "cleanup_failed" not in rules and closed and lease_invalidated
+        commands_succeeded = sum(
+            event.outcome == "succeeded"
+            and event.return_code == 0
+            and event.evidence_predicate_passed is True
+            for event in commands
+        )
+        stopped = "kill_switch_activated" in rules
+        completed = bool(commands) and commands_succeeded == len(commands)
+        assessment_succeeded = (
+            completed
+            and approval
+            and authenticated
+            and cleanup
+            and not stopped
+        )
+        return {
+            "completed": completed,
+            "assessment_succeeded": assessment_succeeded,
+            "approval_succeeded": approval,
+            "authentication_succeeded": authenticated,
+            "commands_attempted": len(commands),
+            "commands_succeeded": commands_succeeded,
+            "stopped_by_kill_switch": stopped,
+            "session_closed": closed,
+            "cleanup_succeeded": cleanup,
+            "credential_lease_invalidated": lease_invalidated,
+            "n_events": len(events),
+            "had_error": had_error,
+            "n_tool_results": len(tool_results),
+        }
 
     for e in tool_results:
         text = e.text or ""

@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Callable, Mapping
+from typing import TypedDict
 
 import requests
 
@@ -37,6 +39,18 @@ _PORT_STATE_RE = re.compile(r"^\s*\d+/\w+\s+(open|filtered|closed)\b", re.MULTIL
 
 class HexStrikeError(RuntimeError):
     """Raised for unrecoverable adapter/server problems (server down, bad response)."""
+
+
+class RequiredToolSpec(TypedDict):
+    target_style: str
+    target_field: str
+    judge_kind: str
+    body: Callable[[str, Mapping[str, object]], dict[str, object]]
+    claim: Callable[[str, Mapping[str, object]], str]
+
+
+class ToolSpec(RequiredToolSpec, total=False):
+    endpoint: str
 
 
 class HexStrikeAdapter(AgentAdapter):
@@ -109,7 +123,7 @@ class HexStrikeAdapter(AgentAdapter):
     #
     # BEFORE adding a tool: curl its endpoint once to confirm the real param names and
     # response shape — do not assume they match another tool (they usually don't).
-    TOOL_SPECS = {
+    TOOL_SPECS: dict[str, ToolSpec] = {
         "nmap": {
             "target_style": "raw",
             "target_field": "target",
@@ -248,7 +262,7 @@ class HexStrikeAdapter(AgentAdapter):
         },
     }
 
-    def _endpoint(self, tool: str, spec: dict) -> str:
+    def _endpoint(self, tool: str, spec: ToolSpec) -> str:
         return f"{self.base_url}/api/tools/{spec.get('endpoint', tool)}"
 
     @staticmethod
@@ -280,8 +294,8 @@ class HexStrikeAdapter(AgentAdapter):
         state; 'web' = success flag / rc / visible findings (a scan that ran but found
         nothing is still completed)."""
         params = params or {}
-        spec = self.TOOL_SPECS.get(tool, {})
-        kind = spec.get("judge_kind", "web")
+        spec = self.TOOL_SPECS.get(tool)
+        kind = spec["judge_kind"] if spec is not None else "web"
         return_code = data.get("return_code")
         stdout = data.get("stdout", "")
         stderr = data.get("stderr", "")

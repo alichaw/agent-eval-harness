@@ -27,4 +27,10 @@ assets:
   "asset:winsrv2025-01":
     asset_type: host
     target: "43.213.254.15"
-    ports: "3389,80,443,3000,8080"
+    ports: "22"
+    execution_scope: isolated_lab
+    platform: windows_openssh
+    ssh_port: 22
+    credential_ref: "credential:ssh-winsrv2025-01"
+    # ssh_host_key is intentionally absent from repository configuration.
+    # Real execution fails closed until an operator injects a pinned key.

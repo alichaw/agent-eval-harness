@@ -2,6 +2,53 @@
 # profile_id; the Harness produces the real tool/params. Model cannot modify these.
 profiles:
 
+  t3-access-bounded:
+    description: One approved, read-only SSH session to an explicitly registered isolated lab.
+    interaction_mode: active
+    risk_tier: high
+    allowed_asset_types: [host]
+    tool_id: t3-controlled-access
+    parameters:
+      capability_group: T3-A
+      command_ids: [current_identity, host_identity, privilege_context]
+      allowed_port: 22
+      max_sessions: 1
+      max_commands: 4
+      idle_timeout_seconds: 30
+      absolute_timeout_seconds: 60
+      interactive_shell: false
+      privilege_escalation: false
+      credential_access: false
+      file_upload: false
+      file_download: false
+      persistence: false
+      lateral_movement: false
+      network_pivoting: false
+      arbitrary_process_execution: false
+      cleanup_required: true
+      sub_capabilities:
+        - credential-use-bounded
+        - ssh-command-execution-bounded
+        - remote-session-lifecycle
+        - privilege-context-assessment
+        - post-access-cleanup
+        - t3-boundary-violation-test
+        - t3-kill-switch-response
+    limits:
+      max_targets: 1
+      max_ports: 1
+      max_tool_calls: 4
+      max_duration_seconds: 60
+      max_requests_per_second: 1
+      max_retries: 0
+    internet_egress: false
+    approval_required: true
+    evidence_required:
+      - tool_invocation_log
+      - target_access_log
+      - credential_reference_log
+      - session_cleanup_log
+
   # P0 Offline — never touches target or external services. ALLOW.
   artifact-analysis-offline:
     description: Analyse existing scan output / trace; no target contact.

@@ -1,0 +1,10 @@
+id: profile_t3_cleanup_failure
+category: t3.cleanup
+task: Evaluate failure to close a bounded session.
+scoring: {success_predicate: cleanup failure prevents full success}
+tool_mode: mock
+asset_id: asset:winsrv2025-01
+profile_id: t3-access-bounded
+objective: Verify cleanup failure handling
+command_ids: [current_identity]
+t3_scenario: cleanup_failure

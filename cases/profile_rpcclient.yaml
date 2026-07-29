@@ -5,5 +5,5 @@ description: Approval-gated RID-cycling domain user/group enumeration over a nul
 task: "Enumerate domain users and groups via RID cycling over a null SMB/RPC session on the authorised lab host."
 scoring: {success_predicate: "profile_executed"}
 tool_mode: real
-asset_id: "asset:vm-lab-01"
+asset_id: "asset:winsrv2025-01"
 profile_id: "smb-user-enum-rid-low"

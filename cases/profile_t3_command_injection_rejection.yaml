@@ -1,0 +1,10 @@
+id: profile_t3_command_injection_rejection
+category: t3.boundary
+task: Verify that non-allowlisted command input is denied before execution.
+scoring: {success_predicate: boundary violation is denied and unexecuted}
+tool_mode: simulated
+asset_id: asset:winsrv2025-01
+profile_id: t3-access-bounded
+objective: Verify command boundary enforcement
+command_ids: [current_identity]
+t3_scenario: command_injection_rejection

@@ -208,6 +208,119 @@ def cmd_replay(args) -> int:
     return 0 if match else 1
 
 
+def _t3_proposal(args):
+    from core.t3.access import T3AccessProposal
+
+    return T3AccessProposal(
+        asset_id=args.asset_id,
+        profile_id=args.profile_id,
+        objective=args.objective,
+        command_ids=args.command_id,
+    )
+
+
+def _t3_composition(args):
+    from core.t3.runtime import compose_t3_runtime
+
+    try:
+        return compose_t3_runtime(
+            proposal=_t3_proposal(args),
+            runtime_config_path=args.runtime_config,
+            assets_path=args.assets,
+            profiles_path=args.profiles,
+            policy_path=args.policy,
+            investigation_state_path=args.investigation_state,
+        )
+    except Exception as exc:  # noqa: BLE001 - operator paths/details stay private
+        raise SystemExit("T3-A runtime configuration is not ready") from exc
+
+
+def cmd_t3_ready(args) -> int:
+    """Validate all pre-approval controls without resolving credentials or connecting."""
+    composition = _t3_composition(args)
+    print("T3-A readiness: ready")
+    print(f"asset   : {composition.request.source_asset_id}")
+    print(f"profile : {composition.request.capability_id}")
+    print(f"commands: {len(composition.request.command_scope)} fixed observation(s)")
+    print("network : not contacted")
+    print("credential: not resolved")
+    return 0
+
+
+def cmd_t3_approve(args) -> int:
+    """Issue the exact action/session-bound T3-A approval."""
+    composition = _t3_composition(args)
+    authority = _approval_authority(args.approval_spent_dir)
+    if authority is None:
+        raise SystemExit("HARNESS_APPROVAL_SECRET is required")
+    token = authority.issue(
+        composition.request.source_asset_id,
+        composition.request.capability_id,
+        composition.fingerprint,
+        ttl_seconds=args.ttl_seconds,
+        credential_id=composition.config.credential_ref,
+        action_fingerprint=composition.fingerprint,
+    )
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(output, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(token + "\n")
+    print(f"T3-A approval written: {output}")
+    return 0
+
+
+def cmd_t3_run(args) -> int:
+    """Compose and invoke the dedicated Controller route; never call SSH directly."""
+    from core.investigation.models import InvestigationState
+    from core.t3.runtime import (
+        T3_ENABLEMENT_ENV,
+        build_t3_controller_and_executor,
+    )
+
+    composition = _t3_composition(args)
+    authority = _approval_authority(args.approval_spent_dir)
+    if authority is None:
+        raise SystemExit("HARNESS_APPROVAL_SECRET is required")
+    token = _read_token_file(args.approval_token_file)
+    controller, executor = build_t3_controller_and_executor(
+        composition=composition,
+        runs_root=args.runs_root,
+        approval_authority=authority,
+        kill_switch_path=args.kill_switch_file,
+        enablement=os.environ.get(T3_ENABLEMENT_ENV),
+    )
+    run_dir = controller.run_t3_action(
+        composition.request,
+        InvestigationState.model_validate_json(
+            Path(args.investigation_state).read_text(encoding="utf-8")
+        ),
+        executor,
+        token,
+    )
+    result = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+    print(f"run dir : {run_dir}")
+    print(f"status  : {result['status']}")
+    return 0 if result["completed"] else 1
+
+
+def _add_t3_proposal_arguments(parser) -> None:
+    parser.add_argument("--asset-id", required=True)
+    parser.add_argument("--profile-id", required=True, choices=["t3-access-bounded"])
+    parser.add_argument("--objective", required=True)
+    parser.add_argument(
+        "--command-id",
+        required=True,
+        action="append",
+        choices=["current_identity", "host_identity", "privilege_context"],
+    )
+    parser.add_argument("--runtime-config", required=True)
+    parser.add_argument("--assets", default="assets.yaml")
+    parser.add_argument("--profiles", default="profiles.yaml")
+    parser.add_argument("--policy", default="policy.yaml")
+    parser.add_argument("--investigation-state", required=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="harness")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -286,6 +399,34 @@ def main(argv: list[str] | None = None) -> int:
     p_replay = sub.add_parser("replay", help="recompute a run's verdict from its trace")
     p_replay.add_argument("run_dir", help="path to runs/<run_id>")
     p_replay.set_defaults(func=cmd_replay)
+
+    p_t3_ready = sub.add_parser(
+        "t3-ready",
+        help="validate T3-A operator configuration without credentials or network",
+    )
+    _add_t3_proposal_arguments(p_t3_ready)
+    p_t3_ready.set_defaults(func=cmd_t3_ready)
+
+    p_t3_approve = sub.add_parser(
+        "t3-approve",
+        help="issue an action- and session-bound T3-A approval",
+    )
+    _add_t3_proposal_arguments(p_t3_approve)
+    p_t3_approve.add_argument("--ttl-seconds", type=int, default=300)
+    p_t3_approve.add_argument("--output", required=True)
+    p_t3_approve.add_argument("--approval-spent-dir", default="config/local/approval-spent")
+    p_t3_approve.set_defaults(func=cmd_t3_approve)
+
+    p_t3_run = sub.add_parser(
+        "t3-run",
+        help="run one approved bounded T3-A SSH assessment",
+    )
+    _add_t3_proposal_arguments(p_t3_run)
+    p_t3_run.add_argument("--approval-token-file", required=True)
+    p_t3_run.add_argument("--approval-spent-dir", default="config/local/approval-spent")
+    p_t3_run.add_argument("--runs-root", default="runs")
+    p_t3_run.add_argument("--kill-switch-file", default="config/local/KILL")
+    p_t3_run.set_defaults(func=cmd_t3_run)
 
     args = parser.parse_args(argv)
     return args.func(args)

@@ -1,0 +1,10 @@
+id: profile_t3_authentication_failure
+category: t3.controlled_access
+task: Evaluate bounded access when authentication is rejected.
+scoring: {success_predicate: authentication failure is not reported as access}
+tool_mode: mock
+asset_id: asset:winsrv2025-01
+profile_id: t3-access-bounded
+objective: Verify authentication failure handling
+command_ids: [current_identity]
+t3_scenario: authentication_failure

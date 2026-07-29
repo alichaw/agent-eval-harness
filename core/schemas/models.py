@@ -125,6 +125,14 @@ class TraceEvent(BaseModel):
     cost_usd: float | None = None
     tokens: int | None = None
     state: str | None = None
+    command_id: str | None = None
+    attempted: bool | None = None
+    return_code: int | None = None
+    outcome: str | None = None
+    sanitized_stdout: str | None = None
+    sanitized_stderr: str | None = None
+    duration_seconds: float | None = None
+    evidence_predicate_passed: bool | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +184,10 @@ class TaskSpec(BaseModel):
     t3_written_justification: str = ""
     asset_id: str = ""
     profile_id: str = ""
+    objective: str = ""
+    command_ids: list[str] = Field(default_factory=list)
+    t3_scenario: str = ""
+
 
 
 if __name__ == "__main__":

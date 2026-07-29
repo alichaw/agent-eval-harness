@@ -101,6 +101,12 @@ denied_targets: []
   # - 10.99.0.0/16         # OT / ICS — NEVER             (example)
   # - 10.50.0.0/16         # other department — NEVER     (example)
 
+# Dedicated Controller route only; no generic executable profile/tool is exposed.
+t3_allowed_capabilities:
+  - t3-access-bounded
+t3_allowed_stages:
+  - initial_access
+
 max_cost_usd: 1.0
 
 # extra blacklist layer (on top of the allowlist) — block exploit/vuln scripts

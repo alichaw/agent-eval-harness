@@ -1,0 +1,10 @@
+id: profile_t3_approval_mismatch
+category: t3.approval
+task: Evaluate an action-bound approval mismatch.
+scoring: {success_predicate: approval mismatch is denied before credential use}
+tool_mode: simulated
+asset_id: asset:winsrv2025-01
+profile_id: t3-access-bounded
+objective: Verify approval binding
+command_ids: [current_identity]
+t3_scenario: approval_mismatch
