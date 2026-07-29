@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 class T3Stage(str, Enum):
     INITIAL_ACCESS = "initial_access"
+    WINDOWS_ENUMERATION = "windows_enumeration"
     PRIVILEGE_ESCALATION = "privilege_escalation"
     LATERAL_MOVEMENT = "lateral_movement"
 

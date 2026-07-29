@@ -156,6 +156,7 @@ class Controller:
         run_dir.mkdir(parents=True, exist_ok=True)
         redactor = Redactor.from_assets(self.assets, redact_credentials=True)
         trace = TraceWriter(run_id, run_dir / "trace.jsonl", redactor=redactor)
+        t3_runtime_binding_fingerprint = ""
 
         bounded_executor_impl = (
             executor
@@ -213,6 +214,10 @@ class Controller:
             )
             result = {
                 "run_id": run_id,
+                "asset_id": (
+                    request.source_asset_id if isinstance(request, T3ActionRequest) else None
+                ),
+                "runtime_binding_fingerprint": t3_runtime_binding_fingerprint,
                 "completed": completed,
                 "status": status,
                 "rule": rule,
@@ -484,6 +489,7 @@ class Controller:
             if bounded_executor
             else t3_action_fingerprint(request)
         )
+        t3_runtime_binding_fingerprint = action_fingerprint
         if not action_fingerprint:
             emit("t3_fingerprint_invalid", Verdict.DENY.value, "T3 approval rejected")
             return finish(completed=False, status="denied", rule="t3_fingerprint_invalid")

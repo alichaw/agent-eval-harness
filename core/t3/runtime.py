@@ -39,7 +39,7 @@ class T3RuntimeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     asset_id: str = Field(min_length=1, max_length=128)
-    profile_id: str = Field(pattern=r"^t3-access-bounded$")
+    profile_id: str = Field(pattern=r"^(t3-access-bounded|windows-host-enumeration-readonly)$")
     credential_ref: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
     username: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$")
     private_key_path: str = Field(min_length=1)

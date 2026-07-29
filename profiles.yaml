@@ -49,6 +49,47 @@ profiles:
       - credential_reference_log
       - session_cleanup_log
 
+  windows-host-enumeration-readonly:
+    description: One approved session of immutable read-only Windows host enumeration actions.
+    interaction_mode: active
+    risk_tier: medium
+    allowed_asset_types: [host]
+    tool_id: t3-windows-enumeration-readonly
+    parameters:
+      capability_group: T3-B
+      stage: T3-B
+      command_ids:
+        - windows_os_version
+        - windows_network_configuration
+        - windows_listening_ports
+        - windows_running_services
+        - windows_installed_hotfixes
+      max_sessions: 1
+      max_commands: 5
+      per_command_timeout_seconds: 15
+      total_timeout_seconds: 60
+      stdout_limit: 16384
+      stderr_limit: 4096
+      total_output_limit: 50000
+      max_retries: 0
+      interactive_shell: false
+      read_only: true
+      cleanup_required: true
+    limits:
+      max_targets: 1
+      max_ports: 1
+      max_tool_calls: 5
+      max_duration_seconds: 60
+      max_requests_per_second: 1
+      max_retries: 0
+    internet_egress: false
+    approval_required: true
+    evidence_required:
+      - t3a_prerequisite_evidence
+      - action_definition_digest
+      - bounded_action_output
+      - session_cleanup_log
+
   # P0 Offline — never touches target or external services. ALLOW.
   artifact-analysis-offline:
     description: Analyse existing scan output / trace; no target contact.

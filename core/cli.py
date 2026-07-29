@@ -209,6 +209,15 @@ def cmd_replay(args) -> int:
 
 
 def _t3_proposal(args):
+    if args.profile_id == "windows-host-enumeration-readonly":
+        from core.t3.enumeration import T3BProposal
+
+        return T3BProposal(
+            asset_id=args.asset_id,
+            profile_id=args.profile_id,
+            objective=args.objective,
+            command_ids=args.command_id,
+        )
     from core.t3.access import T3AccessProposal
 
     return T3AccessProposal(
@@ -220,6 +229,22 @@ def _t3_proposal(args):
 
 
 def _t3_composition(args):
+    if args.profile_id == "windows-host-enumeration-readonly":
+        from core.t3.enumeration_runtime import compose_t3b_runtime
+
+        if not args.prerequisite_run_dir:
+            raise SystemExit("T3-B requires --prerequisite-run-dir")
+        try:
+            return compose_t3b_runtime(
+                proposal=_t3_proposal(args),
+                runtime_config_path=args.runtime_config,
+                assets_path=args.assets,
+                profiles_path=args.profiles,
+                policy_path=args.policy,
+                prerequisite_run_dir=args.prerequisite_run_dir,
+            )
+        except Exception as exc:
+            raise SystemExit("T3-B runtime configuration is not ready") from exc
     from core.t3.runtime import compose_t3_runtime
 
     try:
@@ -238,6 +263,19 @@ def _t3_composition(args):
 def cmd_t3_ready(args) -> int:
     """Validate all pre-approval controls without resolving credentials or connecting."""
     composition = _t3_composition(args)
+    if args.profile_id == "windows-host-enumeration-readonly":
+        print("T3-B readiness: ready")
+        print(f"stage   : {composition.bindings.stage_id}")
+        print(f"asset   : {composition.plan.asset_id}")
+        print(f"profile : {composition.bindings.profile_id}")
+        print(f"commands: {', '.join(composition.bindings.command_ids)}")
+        print(f"prerequisite: {composition.prerequisite.evidence_ref}")
+        print("limits  : 5 commands, 1 session, 15s/command, 60s total")
+        print(f"registry: {composition.bindings.registry_digest}")
+        print(f"runtime : {composition.bindings.runtime_binding_fingerprint}")
+        print("network : not contacted")
+        print("credential: not resolved")
+        return 0
     print("T3-A readiness: ready")
     print(f"asset   : {composition.request.source_asset_id}")
     print(f"profile : {composition.request.capability_id}")
@@ -254,19 +292,36 @@ def cmd_t3_approve(args) -> int:
     if authority is None:
         raise SystemExit("HARNESS_APPROVAL_SECRET is required")
     token = authority.issue(
-        composition.request.source_asset_id,
-        composition.request.capability_id,
-        composition.fingerprint,
+        (
+            composition.plan.asset_id
+            if args.profile_id == "windows-host-enumeration-readonly"
+            else composition.request.source_asset_id
+        ),
+        (
+            composition.bindings.profile_id
+            if args.profile_id == "windows-host-enumeration-readonly"
+            else composition.request.capability_id
+        ),
+        (
+            composition.bindings.fingerprint
+            if args.profile_id == "windows-host-enumeration-readonly"
+            else composition.fingerprint
+        ),
         ttl_seconds=args.ttl_seconds,
         credential_id=composition.config.credential_ref,
-        action_fingerprint=composition.fingerprint,
+        action_fingerprint=(
+            composition.bindings.fingerprint
+            if args.profile_id == "windows-host-enumeration-readonly"
+            else composition.fingerprint
+        ),
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(output, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(token + "\n")
-    print(f"T3-A approval written: {output}")
+    stage = "T3-B" if args.profile_id == "windows-host-enumeration-readonly" else "T3-A"
+    print(f"{stage} approval written: {output}")
     return 0
 
 
@@ -283,6 +338,26 @@ def cmd_t3_run(args) -> int:
     if authority is None:
         raise SystemExit("HARNESS_APPROVAL_SECRET is required")
     token = _read_token_file(args.approval_token_file)
+    if args.profile_id == "windows-host-enumeration-readonly":
+        from core.safety import KillSwitch
+        from core.t3.enumeration import ParamikoT3BTransport
+        from core.t3.enumeration_runtime import execute_t3b_composition
+        from core.t3.runtime import T3_ENABLEMENT_ENV
+
+        if os.environ.get(T3_ENABLEMENT_ENV) != "true":
+            raise SystemExit("T3-B lab execution is disabled")
+        run_dir = execute_t3b_composition(
+            composition,
+            authority=authority,
+            token=token,
+            transport=ParamikoT3BTransport(),
+            runs_root=args.runs_root,
+            kill_switch=KillSwitch(Path(args.kill_switch_file)),
+        )
+        result = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+        print(f"run dir : {run_dir}")
+        print(f"status  : {result['status']}")
+        return 0 if result["completed"] else 1
     controller, executor = build_t3_controller_and_executor(
         composition=composition,
         runs_root=args.runs_root,
@@ -306,19 +381,36 @@ def cmd_t3_run(args) -> int:
 
 def _add_t3_proposal_arguments(parser) -> None:
     parser.add_argument("--asset-id", required=True)
-    parser.add_argument("--profile-id", required=True, choices=["t3-access-bounded"])
+    parser.add_argument(
+        "--profile-id",
+        required=True,
+        choices=["t3-access-bounded", "windows-host-enumeration-readonly"],
+    )
     parser.add_argument("--objective", required=True)
     parser.add_argument(
         "--command-id",
         required=True,
         action="append",
-        choices=["current_identity", "host_identity", "privilege_context"],
+        choices=[
+            "current_identity",
+            "host_identity",
+            "privilege_context",
+            "windows_os_version",
+            "windows_network_configuration",
+            "windows_listening_ports",
+            "windows_running_services",
+            "windows_installed_hotfixes",
+        ],
     )
     parser.add_argument("--runtime-config", required=True)
     parser.add_argument("--assets", default="assets.yaml")
     parser.add_argument("--profiles", default="profiles.yaml")
     parser.add_argument("--policy", default="policy.yaml")
     parser.add_argument("--investigation-state", required=True)
+    parser.add_argument(
+        "--prerequisite-run-dir",
+        help="original verified T3-A run directory; required only for T3-B",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

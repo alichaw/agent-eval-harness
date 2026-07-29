@@ -104,8 +104,10 @@ denied_targets: []
 # Dedicated Controller route only; no generic executable profile/tool is exposed.
 t3_allowed_capabilities:
   - t3-access-bounded
+  - windows-host-enumeration-readonly
 t3_allowed_stages:
   - initial_access
+  - windows_enumeration
 
 max_cost_usd: 1.0
 
