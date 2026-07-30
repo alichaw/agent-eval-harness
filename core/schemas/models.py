@@ -142,6 +142,9 @@ class TraceEvent(BaseModel):
     approval_fingerprint: str | None = None
     previous_digest: str | None = None
     event_digest: str | None = None
+    execution_mode: str | None = None
+    action_definition_digest: str | None = None
+    runtime_binding_fingerprint: str | None = None
 
 
 # ---------------------------------------------------------------------------

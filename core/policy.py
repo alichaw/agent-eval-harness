@@ -85,6 +85,9 @@ class Policy:
     t3_high_delay_seconds: int = 3600  # 1 hour default
     t3_allowed_capabilities: list[str] = field(default_factory=list)
     t3_allowed_stages: list[str] = field(default_factory=list)
+    t3_prerequisite_max_age_seconds: int = 3600
+    t3_prerequisite_clock_skew_seconds: int = 30
+    t3_require_credential_invalidation: bool = True
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> Policy:
@@ -116,6 +119,9 @@ class Policy:
             t3_high_delay_seconds=t3_high_delay,
             t3_allowed_capabilities=data.get("t3_allowed_capabilities", []),
             t3_allowed_stages=data.get("t3_allowed_stages", []),
+            t3_prerequisite_max_age_seconds=data.get("t3_prerequisite_max_age_seconds", 3600),
+            t3_prerequisite_clock_skew_seconds=data.get("t3_prerequisite_clock_skew_seconds", 30),
+            t3_require_credential_invalidation=data.get("t3_require_credential_invalidation", True),
         )
 
     @staticmethod

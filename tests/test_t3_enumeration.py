@@ -8,6 +8,7 @@ from core.safety import ApprovalAuthority, ApprovalError, KillSwitch
 from core.t3.enumeration import (
     T3B_PROFILE,
     WINDOWS_ACTION_REGISTRY,
+    ExecutionMode,
     T3APrerequisite,
     T3BExecutionPlan,
     T3BExecutor,
@@ -46,6 +47,7 @@ class FakeResolver(LabSshCredentialResolver):
     def invalidate_for_lab_ssh(self, credential_handle, source_asset_id):
         if self.invalidate_error:
             raise RuntimeError("fake invalidation failure")
+        return True
 
 
 class FakeSession:
@@ -70,6 +72,9 @@ class FakeSession:
 
 
 class FakeTransport:
+    execution_mode = ExecutionMode.OFFLINE_MOCK
+    network_capable = False
+
     def __init__(self, session):
         self.session = session
         self.calls = 0
@@ -95,6 +100,8 @@ def prerequisite(**updates):
         session_closed=True,
         cleanup_succeeded=True,
         credential_lease_invalidated=True,
+        profile_id="t3-authorized-access-bounded",
+        stage="authorized_access",
     )
     values.update(updates)
     return T3APrerequisite(**values)

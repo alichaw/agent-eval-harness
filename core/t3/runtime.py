@@ -15,14 +15,17 @@ from core.policy import Policy, T3PolicyRequest, Verdict
 from core.profiles import AssetRegistry, ProfileCatalog
 from core.safety import ApprovalAuthority, KillSwitch, profile_fingerprint
 from core.t3.access import (
+    SESSION_POLICY,
     T3_ACCESS_PROFILE,
     T3_AUTHORIZED_ACCESS_PROFILE,
     BoundedLabSshT3Executor,
     ParamikoBoundedSshTransport,
     T3AccessProposal,
+    T3CommandId,
     materialize_t3_access_request,
     t3_access_approval_fingerprint,
 )
+from core.t3.binding import RuntimeBinding, canonical_digest, host_key_identity
 from core.t3.executor import (
     LabSshCredential,
     LabSshCredentialResolver,
@@ -82,6 +85,7 @@ class T3RuntimeComposition:
     policy: Policy
     config: T3RuntimeConfig
     fingerprint: str
+    runtime_binding_fingerprint: str
 
 
 def _read_private_config(path: str | Path) -> T3RuntimeConfig:
@@ -190,6 +194,28 @@ def compose_t3_runtime(
             separators=(",", ":"),
         ).encode()
     ).hexdigest()
+    host_key_algorithm, host_key_fingerprint = host_key_identity(config.pinned_host_key)
+    runtime_binding = RuntimeBinding(
+        asset_id=proposal.asset_id,
+        target_identity=canonical_digest(
+            {"asset_id": proposal.asset_id, "target": source["target"]}
+        ),
+        host=source["target"],
+        port=source["ssh_port"],
+        credential_ref=config.credential_ref,
+        principal=config.username,
+        host_key_algorithm=host_key_algorithm,
+        host_key_fingerprint=host_key_fingerprint,
+        transport_type="ssh_paramiko",
+        runtime_config_digest=canonical_digest(config.model_dump(mode="json")),
+        asset_registry_digest=canonical_digest(source),
+        policy_digest=canonical_digest(asdict(policy)),
+        profile_digest=profile_fingerprint(profile),
+        prerequisite_stage=request.stage.value,
+        prerequisite_capability=request.capability_id,
+        session_limits_digest=canonical_digest(asdict(SESSION_POLICY)),
+        action_registry_digest=canonical_digest([item.value for item in T3CommandId]),
+    )
     return T3RuntimeComposition(
         request=request,
         assets=composed_assets,
@@ -199,6 +225,7 @@ def compose_t3_runtime(
             request,
             enforcement_binding=enforcement_binding,
         ),
+        runtime_binding_fingerprint=runtime_binding.fingerprint,
     )
 
 
@@ -222,6 +249,7 @@ def build_t3_controller_and_executor(
         permitted_target=composition.assets.resolve(composition.request.source_asset_id)["target"],
         kill_switch=kill_switch,
         approval_fingerprint=composition.fingerprint,
+        runtime_binding_fingerprint=composition.runtime_binding_fingerprint,
     )
     controller = Controller(
         runs_root=runs_root,

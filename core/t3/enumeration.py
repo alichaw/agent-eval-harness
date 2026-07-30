@@ -6,14 +6,15 @@ transport details remain in this trusted module/operator configuration.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
-import shlex
+import os
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -21,8 +22,9 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from core.redaction import Redactor
+from core.replay import validate_run_artifacts
 from core.safety import ApprovalAuthority, KillSwitch
-from core.schemas.models import SCHEMA_VERSION, TraceEvent, TraceEventType
+from core.schemas.models import SCHEMA_VERSION, ToolMode, TraceEventType
 from core.t3.executor import (
     LabSshConnection,
     LabSshCredential,
@@ -43,6 +45,12 @@ T3B_TOTAL_TIMEOUT_SECONDS = 60
 T3B_STDOUT_LIMIT = 16_384
 T3B_STDERR_LIMIT = 4_096
 T3B_TOTAL_OUTPUT_LIMIT = 50_000
+T3B_ENABLEMENT_ENV = "T3_LAB_EXECUTION_ENABLED"
+
+
+class ExecutionMode(str, Enum):
+    OFFLINE_MOCK = "offline_mock"
+    LAB_REAL = "lab_real"
 
 
 class WindowsActionId(str, Enum):
@@ -187,6 +195,8 @@ class T3APrerequisite:
     session_closed: bool
     cleanup_succeeded: bool
     credential_lease_invalidated: bool
+    profile_id: str = ""
+    stage: str = ""
 
     @property
     def verified(self) -> bool:
@@ -205,22 +215,59 @@ class T3APrerequisite:
 
 
 def load_t3a_prerequisite(run_dir: str | Path) -> T3APrerequisite:
-    """Derive a prerequisite only from stored original T3-A artifacts."""
+    """Derive a prerequisite only after authoritative strict replay."""
     root = Path(run_dir)
-    result = json.loads((root / "result.json").read_text(encoding="utf-8"))
-    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    validated = validate_run_artifacts(root)
+    if not validated.valid:
+        raise ValueError(f"T3-A prerequisite rejected: {validated.code}")
+    result, manifest = validated.result, validated.manifest
     raw_trace = (root / "trace.jsonl").read_bytes()
-    events = [TraceEvent.model_validate_json(line) for line in raw_trace.splitlines()]
+    events = list(validated.events)
     rules = {item.rule for item in events}
     commands = {item.command_id: item for item in events if item.type is TraceEventType.TOOL_RESULT}
     outcome = result.get("lab_outcome") or {}
-    asset_id = outcome.get("asset_id") or result.get("asset_id")
+    if (
+        result.get("status") != "completed"
+        or result.get("approval_consumed") is not True
+        or result.get("real_action_performed") is not True
+        or outcome.get("completed") is not True
+        or outcome.get("assessment_succeeded") is not True
+        or outcome.get("authentication_succeeded") is not True
+        or outcome.get("session_closed") is not True
+        or outcome.get("cleanup_succeeded") is not True
+        or outcome.get("credential_lease_invalidated") is not True
+    ):
+        raise ValueError("T3-A prerequisite rejected: result_trace_outcome_mismatch")
+    result_asset = result.get("asset_id")
+    outcome_asset = outcome.get("asset_id")
+    if outcome_asset is not None and result_asset != outcome_asset:
+        raise ValueError("T3-A prerequisite rejected: asset_binding_mismatch")
+    asset_id = result_asset
     runtime_fp = result.get("runtime_binding_fingerprint", "")
     if not isinstance(asset_id, str) or not asset_id:
         raise ValueError("T3-A evidence lacks asset binding")
-    observed_at = manifest.get("created_utc")
-    if not isinstance(observed_at, str):
+    created_at = manifest.get("created_utc")
+    if not isinstance(created_at, str):
         raise ValueError("T3-A evidence lacks trusted timestamp")
+    try:
+        created = datetime.fromisoformat(created_at)
+    except ValueError as exc:
+        raise ValueError("T3-A evidence timestamp invalid") from exc
+    if created.tzinfo is None or created.utcoffset() is None:
+        raise ValueError("T3-A evidence timestamp must be timezone-aware")
+    event_times = [datetime.fromtimestamp(item.ts, timezone.utc) for item in events]
+    earliest_allowed = created.astimezone(timezone.utc) - timedelta(seconds=5)
+    if not event_times or min(event_times) < earliest_allowed:
+        raise ValueError("T3-A artifact timestamps inconsistent")
+    observed_at = max(event_times).isoformat()
+    profile_id = result.get("profile_id")
+    stage = result.get("stage")
+    if profile_id not in {"t3-access-bounded", "t3-authorized-access-bounded"}:
+        raise ValueError("T3-A prerequisite rejected: incompatible_profile")
+    if stage not in {"initial_access", "authorized_access"}:
+        raise ValueError("T3-A prerequisite rejected: incompatible_stage")
+    if not isinstance(runtime_fp, str) or len(runtime_fp) != 64:
+        raise ValueError("T3-A prerequisite rejected: runtime_binding_missing")
     host = commands.get("host_identity")
     identity = commands.get("current_identity")
     privilege = commands.get("privilege_context")
@@ -239,21 +286,32 @@ def load_t3a_prerequisite(run_dir: str | Path) -> T3APrerequisite:
         session_closed="session_closed" in rules,
         cleanup_succeeded=outcome.get("cleanup_succeeded") is True,
         credential_lease_invalidated="credential_lease_invalidated" in rules,
+        profile_id=profile_id,
+        stage=stage,
     )
 
 
 @dataclass(frozen=True)
 class T3BBindings:
+    request_action_id: str
     stage_id: str
+    capability_id: str
     asset_id: str
+    resolved_target_identity: str
     asset_fingerprint: str
+    asset_registry_digest: str
     profile_id: str
     profile_fingerprint: str
+    policy_digest: str
+    execution_mode: str
     runtime_binding_fingerprint: str
     credential_reference_fingerprint: str
     command_ids: tuple[str, ...]
     registry_digest: str
+    prerequisite_run_id: str
+    prerequisite_evidence_ref: str
     prerequisite_evidence_fingerprint: str
+    justification: str
     max_command_count: int = T3B_MAX_COMMANDS
     max_session_count: int = T3B_MAX_SESSIONS
     per_command_timeout_seconds: int = T3B_COMMAND_TIMEOUT_SECONDS
@@ -276,6 +334,9 @@ def build_bindings(
     runtime_binding_fingerprint: str,
     credential_ref: str,
     prerequisite: T3APrerequisite,
+    policy_digest: str = "",
+    asset_registry_digest: str = "",
+    execution_mode: ExecutionMode = ExecutionMode.OFFLINE_MOCK,
     registry: dict[WindowsActionId, WindowsActionDefinition] = WINDOWS_ACTION_REGISTRY,
 ) -> T3BBindings:
     if prerequisite.asset_id != proposal.asset_id or not prerequisite.verified:
@@ -289,16 +350,27 @@ def build_bindings(
         if definition.platform != asset.get("platform"):
             raise ValueError("action platform mismatch")
     return T3BBindings(
+        request_action_id=f"t3b-{_digest(proposal.model_dump(mode='json'))[:24]}",
         stage_id=T3B_STAGE,
+        capability_id=T3B_PROFILE,
         asset_id=proposal.asset_id,
+        resolved_target_identity=_digest(
+            {"asset_id": proposal.asset_id, "target": asset.get("target")}
+        ),
         asset_fingerprint=_digest(asset),
+        asset_registry_digest=asset_registry_digest or _digest(asset),
         profile_id=proposal.profile_id,
         profile_fingerprint=profile_fingerprint,
+        policy_digest=policy_digest,
+        execution_mode=execution_mode.value,
         runtime_binding_fingerprint=runtime_binding_fingerprint,
         credential_reference_fingerprint=_digest(credential_ref),
         command_ids=tuple(item.value for item in proposal.command_ids),  # ordered semantics
         registry_digest=action_registry_digest(registry),
+        prerequisite_run_id=prerequisite.run_id,
+        prerequisite_evidence_ref=prerequisite.evidence_ref,
         prerequisite_evidence_fingerprint=prerequisite.evidence_fingerprint,
+        justification=proposal.objective,
     )
 
 
@@ -332,6 +404,12 @@ class T3BActionEvidence:
     verification_status: str
     observation_summary: str
     cleanup_status: str
+    stdout_original_bytes: int = 0
+    stdout_retained_bytes: int = 0
+    stderr_original_bytes: int = 0
+    stderr_retained_bytes: int = 0
+    stdout_decoding_errors: bool = False
+    stderr_decoding_errors: bool = False
 
 
 @dataclass(frozen=True)
@@ -357,6 +435,9 @@ class T3BSession(ABC):
 
 
 class T3BTransport(ABC):
+    execution_mode: ExecutionMode
+    network_capable: bool
+
     @abstractmethod
     def open(self, connection: LabSshConnection, credential: LabSshCredential) -> T3BSession: ...
 
@@ -369,8 +450,16 @@ class _ParamikoT3BSession(T3BSession):
         trusted = WINDOWS_ACTION_REGISTRY.get(definition.action_id)
         if trusted != definition:
             raise ValueError("unregistered or drifted action definition")
-        # Every token is registry-owned. No proposal text reaches this construction.
-        command = shlex.join((definition.program, *definition.argv))
+        if (
+            definition.program.lower() != "powershell.exe"
+            or len(definition.argv) < 2
+            or definition.argv[-2] != "-Command"
+        ):
+            raise ValueError("unsupported registered Windows action")
+        # UTF-16LE EncodedCommand avoids dependence on the Windows OpenSSH
+        # default shell's quoting rules. The script is registry-owned.
+        encoded = base64.b64encode(definition.argv[-1].encode("utf-16le")).decode("ascii")
+        command = f"powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand {encoded}"
         _stdin, stdout, stderr = self._client.exec_command(
             command,
             timeout=T3B_COMMAND_TIMEOUT_SECONDS,
@@ -387,6 +476,9 @@ class _ParamikoT3BSession(T3BSession):
 
 class ParamikoT3BTransport(T3BTransport):
     """Reviewed T3-A SSH mechanics with a T3-B registry-only command boundary."""
+
+    execution_mode = ExecutionMode.LAB_REAL
+    network_capable = True
 
     def open(self, connection: LabSshConnection, credential: LabSshCredential) -> T3BSession:
         import paramiko
@@ -410,9 +502,10 @@ class ParamikoT3BTransport(T3BTransport):
         return _ParamikoT3BSession(client)
 
 
-def _bounded(raw: bytes, limit: int) -> tuple[str, bool]:
+def _bounded(raw: bytes, limit: int) -> tuple[str, bool, bool]:
     clipped = raw[:limit]
-    return clipped.decode("utf-8", errors="replace"), len(raw) > limit
+    decoded = clipped.decode("utf-8", errors="replace")
+    return decoded, len(raw) > limit, "\ufffd" in decoded
 
 
 def verify_observation(action_id: WindowsActionId, text: str, truncated: bool) -> tuple[str, str]:
@@ -462,9 +555,15 @@ class T3BExecutor:
         *,
         kill_switch: KillSwitch | None = None,
         clock: Callable[[], float] = time.monotonic,
+        execution_mode: ExecutionMode | None = None,
+        enablement: str | None = None,
+        require_invalidation: bool = True,
     ):
         self.resolver, self.transport = resolver, transport
         self.kill_switch, self.clock = kill_switch, clock
+        self.execution_mode = execution_mode or getattr(transport, "execution_mode", None)
+        self.enablement = enablement
+        self.require_invalidation = require_invalidation
         self.invocation_count = 0
 
     def run(self, plan: T3BExecutionPlan) -> T3BOutcome:
@@ -475,6 +574,24 @@ class T3BExecutor:
         authenticated = closed = invalidated = stopped = False
         total_bytes = 0
         start = self.clock()
+        network_capable = getattr(self.transport, "network_capable", None)
+        if self.execution_mode is ExecutionMode.LAB_REAL:
+            enabled = self.enablement
+            if enabled is None:
+                enabled = os.environ.get(T3B_ENABLEMENT_ENV)
+            if enabled != "true" or network_capable is not True:
+                codes.append("execution_boundary_denied")
+                return self._outcome(records, codes, False, True, False, False)
+        elif self.execution_mode is ExecutionMode.OFFLINE_MOCK:
+            if network_capable is not False:
+                codes.append("execution_mode_invalid")
+                return self._outcome(records, codes, False, True, False, False)
+        else:
+            codes.append("execution_mode_invalid")
+            return self._outcome(records, codes, False, True, False, False)
+        if plan.bindings.execution_mode != self.execution_mode.value:
+            codes.append("execution_mode_binding_mismatch")
+            return self._outcome(records, codes, False, True, False, False)
         try:
             if self.kill_switch and self.kill_switch.engaged():
                 stopped = True
@@ -508,15 +625,22 @@ class T3BExecutor:
                 codes.append("action_started")
                 try:
                     raw = session.execute_registered(definition)
-                    stdout, stdout_cut = _bounded(raw.stdout, T3B_STDOUT_LIMIT)
-                    stderr, stderr_cut = _bounded(raw.stderr, T3B_STDERR_LIMIT)
+                    stdout_raw = raw.stdout[:T3B_STDOUT_LIMIT]
+                    stderr_raw = raw.stderr[:T3B_STDERR_LIMIT]
+                    stdout_cut = len(raw.stdout) > len(stdout_raw)
+                    stderr_cut = len(raw.stderr) > len(stderr_raw)
                     remaining = max(0, T3B_TOTAL_OUTPUT_LIMIT - total_bytes)
-                    combined = stdout.encode() + stderr.encode()
-                    total_cut = len(combined) > remaining
-                    if total_cut:
-                        stdout = combined[:remaining].decode("utf-8", errors="replace")
-                        stderr = ""
-                    total_bytes += min(len(combined), remaining)
+                    # Retain stderr first so a bounded fatal diagnostic cannot be
+                    # erased by voluminous stdout, then allocate the remainder.
+                    kept_stderr = stderr_raw[:remaining]
+                    remaining -= len(kept_stderr)
+                    kept_stdout = stdout_raw[:remaining]
+                    total_cut = len(kept_stdout) != len(stdout_raw) or len(kept_stderr) != len(
+                        stderr_raw
+                    )
+                    stdout, _, stdout_decode_error = _bounded(kept_stdout, len(kept_stdout))
+                    stderr, _, stderr_decode_error = _bounded(kept_stderr, len(kept_stderr))
+                    total_bytes += len(kept_stdout) + len(kept_stderr)
                     verification, summary = verify_observation(
                         definition.action_id, stdout, stdout_cut or total_cut
                     )
@@ -546,9 +670,24 @@ class T3BExecutor:
                             verification,
                             summary,
                             "pending",
+                            len(raw.stdout),
+                            len(kept_stdout),
+                            len(raw.stderr),
+                            len(kept_stderr),
+                            stdout_decode_error,
+                            stderr_decode_error,
                         )
                     )
-                    codes.extend(("action_completed", "output_bounded", "observation_verified"))
+                    codes.extend(("action_completed", "output_bounded"))
+                    codes.append(
+                        "observation_verified"
+                        if verification == "verified"
+                        else (
+                            "observation_inconclusive"
+                            if verification in {"inconclusive", "partial"}
+                            else "observation_failed"
+                        )
+                    )
                     if total_cut:
                         codes.append("total_output_limit_reached")
                         break
@@ -597,14 +736,17 @@ class T3BExecutor:
             # additionally expose explicit invalidation (used by managed leases).
             try:
                 invalidate = getattr(self.resolver, "invalidate_for_lab_ssh", None)
-                if invalidate is not None:
-                    invalidate(plan.credential_ref, plan.asset_id)
-                invalidated = True
-                codes.append("credential_lease_invalidated")
+                if invalidate is None:
+                    codes.append("invalidation_not_supported")
+                elif invalidate(plan.credential_ref, plan.asset_id) is True:
+                    invalidated = True
+                    codes.append("credential_lease_invalidated")
+                else:
+                    codes.append("invalidation_failed")
             except Exception:  # noqa: BLE001
                 invalidated = False
-                codes.append("credential_invalidation_failed")
-        cleanup = closed and invalidated
+                codes.append("invalidation_failed")
+        cleanup = closed and (invalidated or not self.require_invalidation)
         records = [
             T3BActionEvidence(
                 **{**asdict(item), "cleanup_status": "verified" if cleanup else "failed"}
@@ -656,6 +798,9 @@ def run_t3b(
     root = Path(runs_root) / run_id
     root.mkdir(parents=True)
     trace = TraceWriter(run_id, root / "trace.jsonl", redactor=redactor)
+    execution_mode = executor.execution_mode
+    if not isinstance(execution_mode, ExecutionMode):
+        raise ValueError("validated T3-B execution mode required")
     (root / "manifest.json").write_text(
         json.dumps(
             {
@@ -663,17 +808,26 @@ def run_t3b(
                 "created_utc": datetime.now(timezone.utc).isoformat(),
                 "schema_version": SCHEMA_VERSION,
                 "stage": T3B_STAGE,
-                "mock_only": True,
+                "execution_mode": execution_mode.value,
+                "mock_only": execution_mode is ExecutionMode.OFFLINE_MOCK,
             },
             indent=2,
         )
     )
 
-    def emit(rule: str) -> None:
-        trace.emit(TraceEventType.POLICY_EVENT, rule=rule, text="T3-B control state")
+    def emit(rule: str, verdict: str | None = None) -> None:
+        trace.emit(
+            TraceEventType.POLICY_EVENT,
+            rule=rule,
+            verdict=verdict,
+            execution_mode=execution_mode.value,
+            runtime_binding_fingerprint=plan.bindings.runtime_binding_fingerprint,
+            text="T3-B control state",
+        )
 
-    emit("t3b_proposal_validated")
-    emit("t3a_prerequisite_validated")
+    emit("t3b_proposal_validated", "allow")
+    emit("t3a_prerequisite_validated", "allow")
+    emit("t3b_policy_requires_approval", "require_approval")
     current_registry = action_registry_digest()
     if (
         plan.bindings.stage_id != T3B_STAGE
@@ -692,22 +846,56 @@ def run_t3b(
         credential_id=plan.credential_ref,
         action_fingerprint=plan.bindings.fingerprint,
     )
-    emit("t3b_approval_consumed")
+    emit("t3b_approval_consumed", "allow")
+    trace.emit(
+        TraceEventType.EXECUTION_STATE,
+        state="approved",
+        approval_fingerprint=plan.bindings.fingerprint,
+        execution_mode=execution_mode.value,
+        runtime_binding_fingerprint=plan.bindings.runtime_binding_fingerprint,
+    )
     outcome = executor.run(plan)
     for code in outcome.trace_codes:
         emit(code)
     for item in outcome.action_evidence:
+        mode = ToolMode.REAL if execution_mode is ExecutionMode.LAB_REAL else ToolMode.MOCK
+        trace.emit(
+            TraceEventType.TOOL_CALL,
+            tool="t3b-registered-windows-action",
+            action_id=item.action_id,
+            command_id=item.action_id,
+            asset_id=plan.asset_id,
+            profile_id=T3B_PROFILE,
+            executed=True,
+            mode=mode,
+            approval_fingerprint=plan.bindings.fingerprint,
+            action_definition_digest=item.definition_digest,
+            execution_mode=execution_mode.value,
+            runtime_binding_fingerprint=plan.bindings.runtime_binding_fingerprint,
+        )
         trace.emit(
             TraceEventType.TOOL_RESULT,
             tool="t3b-registered-windows-action",
+            action_id=item.action_id,
             command_id=item.action_id,
+            asset_id=plan.asset_id,
+            profile_id=T3B_PROFILE,
+            mode=mode,
             attempted=True,
             return_code=item.exit_status,
-            outcome=item.execution_status,
+            outcome=(
+                "succeeded"
+                if item.execution_status == "completed" and item.verification_status == "verified"
+                else "failed"
+            ),
+            execution_status=item.execution_status,
             sanitized_stdout=item.stdout,
             sanitized_stderr=item.stderr,
             duration_seconds=item.duration_seconds,
             evidence_predicate_passed=item.verification_status == "verified",
+            action_definition_digest=item.definition_digest,
+            execution_mode=execution_mode.value,
+            runtime_binding_fingerprint=plan.bindings.runtime_binding_fingerprint,
             executed=True,
             result_digest=hashlib.sha256(
                 json.dumps(asdict(item), sort_keys=True).encode()
@@ -717,6 +905,8 @@ def run_t3b(
     result = {
         "run_id": run_id,
         "stage": T3B_STAGE,
+        "profile_id": T3B_PROFILE,
+        "execution_mode": execution_mode.value,
         "completed": outcome.completed,
         "status": outcome.status,
         "approval_scope_fingerprint": plan.bindings.fingerprint,
@@ -732,19 +922,45 @@ def run_t3b(
 
 
 def replay_t3b(run_dir: str | Path, bindings: T3BBindings) -> dict[str, Any]:
-    """Offline-only T3-B replay with binding drift detection."""
-    root = Path(run_dir)
-    result = json.loads((root / "result.json").read_text())
-    events = [
-        TraceEvent.model_validate_json(x) for x in (root / "trace.jsonl").read_text().splitlines()
+    """Offline-only T3-B replay extending the authoritative common validator."""
+    validated = validate_run_artifacts(run_dir)
+    if not validated.valid:
+        return {
+            "completed": False,
+            "valid": False,
+            "failure_reason": validated.code,
+            "drift_detected": False,
+            "actions": 0,
+            "cleanup": False,
+            "valid_sequence": False,
+        }
+    result, manifest, events = validated.result, validated.manifest, list(validated.events)
+    actions = [
+        x
+        for x in events
+        if x.type is TraceEventType.TOOL_RESULT and x.tool == "t3b-registered-windows-action"
     ]
-    actions = [x for x in events if x.tool == "t3b-registered-windows-action"]
     rules = [x.rule for x in events if x.rule]
     drift = (
         result.get("approval_scope_fingerprint") != bindings.fingerprint
         or result.get("registry_digest") != bindings.registry_digest
         or result.get("prerequisite_evidence_fingerprint")
         != bindings.prerequisite_evidence_fingerprint
+        or result.get("runtime_binding_fingerprint") != bindings.runtime_binding_fingerprint
+        or result.get("execution_mode") != bindings.execution_mode
+        or manifest.get("execution_mode") != bindings.execution_mode
+        or any(
+            event.execution_mode not in {None, bindings.execution_mode}
+            or event.runtime_binding_fingerprint not in {None, bindings.runtime_binding_fingerprint}
+            for event in events
+        )
+        or any(
+            event.action_id not in {item.value for item in WindowsActionId}
+            or event.action_definition_digest
+            != WINDOWS_ACTION_REGISTRY[WindowsActionId(event.action_id)].digest
+            for event in actions
+            if event.type is TraceEventType.TOOL_RESULT and event.action_id
+        )
     )
     cleanup = {"session_closed", "credential_lease_invalidated"} <= set(rules)
     required_order = [
@@ -771,6 +987,8 @@ def replay_t3b(run_dir: str | Path, bindings: T3BBindings) -> dict[str, Any]:
     )
     return {
         "completed": completed,
+        "valid": completed,
+        "failure_reason": "" if completed else ("binding_drift" if drift else "invalid_t3b_state"),
         "drift_detected": drift,
         "actions": len(actions),
         "cleanup": cleanup,

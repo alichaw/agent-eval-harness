@@ -88,7 +88,7 @@ allowed_targets:
   - juiceshop
   - 192.0.2.10/32     # asset:t1-target — renamed from the old docker-hostname entry
   - 192.0.2.10/32
-  - 43.213.254.15/32     # asset:winsrv2025-01 — Windows Server 2025 lab VM
+  - 198.51.100.25/32     # documentation-only example for asset:winsrv2025-01
   # - 10.20.0.0/24         # authorised test VLAN        (example — replace)
   # - 10.20.1.0/24         # authorised endpoint segment (example — replace)
 
@@ -110,6 +110,9 @@ t3_allowed_stages:
   - initial_access
   - authorized_access
   - windows_enumeration
+t3_prerequisite_max_age_seconds: 3600
+t3_prerequisite_clock_skew_seconds: 30
+t3_require_credential_invalidation: true
 
 max_cost_usd: 1.0
 

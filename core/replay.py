@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -55,6 +56,62 @@ def _verify_integrity(events: list[TraceEvent], expected_run_id: str) -> str | N
             return "broken_digest_chain"
         previous = supplied
     return None
+
+
+@dataclass(frozen=True)
+class ArtifactValidation:
+    """Safe, structured result for an immutable run-artifact validation."""
+
+    valid: bool
+    code: str
+    manifest: dict
+    result: dict
+    events: tuple[TraceEvent, ...]
+
+
+def validate_run_artifacts(
+    run_dir: str | Path,
+    *,
+    require_digest_chain: bool = True,
+) -> ArtifactValidation:
+    """Parse and validate manifest/result/trace as one indivisible audit record."""
+
+    root = Path(run_dir)
+    try:
+        manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+        result = json.loads((root / "result.json").read_text(encoding="utf-8"))
+        raw = (root / "trace.jsonl").read_bytes()
+        if not raw or not raw.endswith(b"\n"):
+            raise ValueError
+        lines = raw.splitlines()
+        events = tuple(TraceEvent.model_validate_json(line) for line in lines)
+    except (OSError, json.JSONDecodeError, ValidationError, ValueError):
+        return ArtifactValidation(False, "malformed_or_truncated_artifacts", {}, {}, ())
+
+    run_ids = {manifest.get("run_id"), result.get("run_id")}
+    if len(run_ids) != 1 or not all(isinstance(item, str) and item for item in run_ids):
+        return ArtifactValidation(False, "artifact_run_id_mismatch", manifest, result, events)
+    expected_run_id = manifest["run_id"]
+    error = _verify_integrity(list(events), expected_run_id)
+    if error:
+        return ArtifactValidation(False, error, manifest, result, events)
+    if require_digest_chain and any(
+        not event.event_digest or not event.previous_digest for event in events
+    ):
+        return ArtifactValidation(False, "digest_chain_required", manifest, result, events)
+
+    replay = replay_run(root)
+    if not replay.get("valid"):
+        return ArtifactValidation(
+            False, str(replay.get("failure_reason") or "invalid_replay"), manifest, result, events
+        )
+    if result.get("completed") is not True or not replay.get("completed"):
+        return ArtifactValidation(False, "result_trace_outcome_mismatch", manifest, result, events)
+    if any(
+        event.type is TraceEventType.POLICY_EVENT and event.verdict == "deny" for event in events
+    ):
+        return ArtifactValidation(False, "terminal_policy_deny", manifest, result, events)
+    return ArtifactValidation(True, "validated", manifest, result, events)
 
 
 def _result_verified(event: TraceEvent, *, legacy: bool) -> bool:
@@ -129,18 +186,19 @@ def replay_run(run_dir: str | Path) -> dict:
                     return _failure("execution_after_terminal_state", events)
                 if event.state == "verified" and not verified_results:
                     return _failure("completion_without_verified_result", events)
-        elif event.type is TraceEventType.TOOL_CALL and event.mode is ToolMode.REAL:
-            if terminal is not None:
-                return _failure("execution_after_policy_deny", events)
+        elif event.type is TraceEventType.TOOL_CALL:
             if event.executed is True:
+                key = event.action_id or f"{event.tool}:{event.seq}"
+                real_calls[key] = event
+            if event.mode is ToolMode.REAL:
+                if terminal is not None:
+                    return _failure("execution_after_policy_deny", events)
                 if not policy_allowed:
                     return _failure("execution_before_policy_allow", events)
                 if approval_required and not approval_seen:
                     return _failure("approval_required", events)
                 if approval_required and approved_fingerprint != event.approval_fingerprint:
                     return _failure("approval_fingerprint_mismatch", events)
-                key = event.action_id or f"{event.tool}:{event.seq}"
-                real_calls[key] = event
         elif event.type is TraceEventType.TOOL_RESULT:
             if terminal is not None:
                 return _failure("result_after_terminal_state", events)

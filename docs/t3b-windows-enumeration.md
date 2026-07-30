@@ -91,6 +91,9 @@ The kill switch is checked before credential use, before session creation,
 before and after actions, and cleanup always runs. Once killed, no later action
 starts; partial evidence is retained and the run is not verified.
 
+Replay and prerequisite loading use the same strict digest-chain/state-machine
+validator. Missing, truncated, reordered, cross-run, policy-denied, cancelled,
+or result/trace-inconsistent artifacts fail closed and are never repaired.
 Replay reads only redacted stored artifacts. It does not resolve credentials,
 open a transport, contact the target, or rerun an action. It deterministically
 rechecks action predicates, cleanup, and approval/registry/profile/asset/
@@ -110,8 +113,20 @@ one or more supported `--command-id` values, and
 `--prerequisite-run-dir` pointing to the original verified T3-A run. T3-B
 readiness is offline and prints the stage, asset, profile, ordered actions,
 prerequisite reference, limits, expiry at approval time, registry digest, and
-runtime binding without credential material. Live execution remains disabled
-unless `T3_LAB_EXECUTION_ENABLED=true`.
+runtime binding without credential material. The manifest and trace record the
+validated `offline_mock` or `lab_real` execution mode. Live execution remains
+disabled at the transport boundary unless `T3_LAB_EXECUTION_ENABLED` is exactly
+`true`; CLI admission is only an earlier diagnostic.
+
+Prerequisite freshness is controlled by `policy.yaml`. The default maximum age
+is 3600 seconds and the documented future-clock-skew tolerance is 30 seconds;
+both values are bound through the policy digest. Timestamps must include a
+timezone, and the maximum-age boundary is inclusive.
+
+Windows OpenSSH execution always invokes fixed, non-interactive
+`powershell.exe` with a UTF-16LE `-EncodedCommand`. Only registry-owned scripts
+are encoded; proposal-controlled shell fragments and parameters are not
+accepted or persisted.
 
 ## Manual Windows Server 2025 lab validation (do not automate)
 

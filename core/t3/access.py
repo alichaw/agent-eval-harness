@@ -396,6 +396,7 @@ class BoundedLabSshT3Executor(T3Executor):
         permitted_target: str,
         kill_switch: KillSwitch | None = None,
         approval_fingerprint: str = "",
+        runtime_binding_fingerprint: str = "",
     ):
         self.resolver = resolver
         self.transport = transport
@@ -403,6 +404,7 @@ class BoundedLabSshT3Executor(T3Executor):
         self.permitted_target = permitted_target
         self.kill_switch = kill_switch
         self.approval_fingerprint = approval_fingerprint
+        self.runtime_binding_fingerprint = runtime_binding_fingerprint
         self.invocation_count = 0
 
     def run(self, plan: BoundedLabSshExecutionPlan) -> T3AccessOutcome:

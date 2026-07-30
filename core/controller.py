@@ -39,7 +39,7 @@ from core.safety import (
     ExecutionState,
     KillSwitch,
 )
-from core.schemas.models import SCHEMA_VERSION, AgentResult, TaskSpec, TraceEventType
+from core.schemas.models import SCHEMA_VERSION, AgentResult, TaskSpec, ToolMode, TraceEventType
 from core.t3.access import (
     SESSION_POLICY,
     T3_ACCESS_CAPABILITY,
@@ -226,6 +226,10 @@ class Controller:
                 "asset_id": (
                     request.source_asset_id if isinstance(request, T3ActionRequest) else None
                 ),
+                "profile_id": (
+                    request.capability_id if isinstance(request, T3ActionRequest) else None
+                ),
+                "stage": (request.stage.value if isinstance(request, T3ActionRequest) else None),
                 "runtime_binding_fingerprint": t3_runtime_binding_fingerprint,
                 "completed": completed,
                 "status": status,
@@ -514,7 +518,11 @@ class Controller:
             )
         else:
             action_fingerprint = t3_action_fingerprint(request)
-        t3_runtime_binding_fingerprint = action_fingerprint
+        t3_runtime_binding_fingerprint = (
+            bounded_executor_impl.runtime_binding_fingerprint
+            if bounded_executor_impl is not None
+            else action_fingerprint
+        )
         if not action_fingerprint:
             emit("t3_fingerprint_invalid", Verdict.DENY.value, "T3 approval rejected")
             return finish(completed=False, status="denied", rule="t3_fingerprint_invalid")
@@ -522,6 +530,12 @@ class Controller:
         if not token or self.approval_authority is None:
             emit("t3_approval_required", Verdict.DENY.value, "T3 approval required")
             return finish(completed=False, status="denied", rule="t3_approval_required")
+        if bounded_executor_impl is not None:
+            emit(
+                "t3_approval_required",
+                Verdict.REQUIRE_APPROVAL.value,
+                "T3 action requires bound approval",
+            )
         try:
             self.approval_authority.verify_and_consume(
                 token,
@@ -535,6 +549,14 @@ class Controller:
             emit("t3_approval_invalid", Verdict.DENY.value, "T3 approval rejected")
             return finish(completed=False, status="denied", rule="t3_approval_invalid")
         emit("t3_approval_verified", Verdict.ALLOW.value, "T3 approval consumed")
+        if bounded_executor_impl is not None:
+            trace.emit(
+                TraceEventType.EXECUTION_STATE,
+                state=ExecutionState.APPROVED.value,
+                approval_fingerprint=action_fingerprint,
+                runtime_binding_fingerprint=t3_runtime_binding_fingerprint,
+                text="T3 approval binding verified",
+            )
 
         # I/J/K. Only a narrow immutable plan crosses the selected executor boundary.
         if bounded_executor_impl is not None:
@@ -577,10 +599,31 @@ class Controller:
                     "Bounded T3-A stage recorded",
                 )
             for command_result in access_outcome.command_results:
+                command_action_id = f"t3a:{command_result.command_id}"
+                definition_digest = hashlib.sha256(command_result.command_id.encode()).hexdigest()
+                trace.emit(
+                    TraceEventType.TOOL_CALL,
+                    tool="t3-fixed-observation",
+                    command_id=command_result.command_id,
+                    action_id=command_action_id,
+                    asset_id=request.source_asset_id,
+                    profile_id=request.capability_id,
+                    attempted=command_result.attempted,
+                    executed=command_result.attempted,
+                    mode=ToolMode.REAL,
+                    approval_fingerprint=action_fingerprint,
+                    action_definition_digest=definition_digest,
+                    runtime_binding_fingerprint=t3_runtime_binding_fingerprint,
+                    text="fixed bounded observation invoked",
+                )
                 trace.emit(
                     TraceEventType.TOOL_RESULT,
                     tool="t3-fixed-observation",
                     command_id=command_result.command_id,
+                    action_id=command_action_id,
+                    asset_id=request.source_asset_id,
+                    profile_id=request.capability_id,
+                    mode=ToolMode.REAL,
                     attempted=command_result.attempted,
                     return_code=command_result.return_code,
                     outcome=command_result.outcome,
@@ -589,6 +632,8 @@ class Controller:
                     duration_seconds=command_result.duration_seconds,
                     evidence_predicate_passed=command_result.evidence_predicate_passed,
                     executed=command_result.attempted,
+                    action_definition_digest=definition_digest,
+                    runtime_binding_fingerprint=t3_runtime_binding_fingerprint,
                     result_digest=hashlib.sha256(
                         json.dumps(asdict(command_result), sort_keys=True).encode()
                     ).hexdigest(),
