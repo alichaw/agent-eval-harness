@@ -281,11 +281,7 @@ def valid_pinned_host_key(value: object) -> bool:
         return False
     algorithm_length = struct.unpack(">I", decoded[:4])[0]
     key_length = struct.unpack(">I", decoded[15:19])[0]
-    return (
-        algorithm_length == 11
-        and decoded[4:15] == b"ssh-ed25519"
-        and key_length == 32
-    )
+    return algorithm_length == 11 and decoded[4:15] == b"ssh-ed25519" and key_length == 32
 
 
 def lab_target_is_locally_permitted(target: str) -> bool:
@@ -302,18 +298,12 @@ def lab_target_is_locally_permitted(target: str) -> bool:
 
 
 def _safe_observation_value(result: LabSshTransportResult) -> str:
-    if (
-        len(result.stdout) > MAX_OBSERVATION_BYTES
-        or result.stderr
-        or result.exit_status != 0
-    ):
+    if len(result.stdout) > MAX_OBSERVATION_BYTES or result.stderr or result.exit_status != 0:
         raise ValueError("invalid observation result")
     text = result.stdout.decode("utf-8", errors="replace")
     text = _ANSI_ESCAPE.sub("", text)
     text = "".join(
-        char
-        for char in text
-        if char in "\n\t" or not unicodedata.category(char).startswith("C")
+        char for char in text if char in "\n\t" or not unicodedata.category(char).startswith("C")
     )
     lines = text.splitlines()
     if not lines or len(lines) > MAX_OBSERVATION_LINES:

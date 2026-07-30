@@ -4,7 +4,9 @@ from dataclasses import replace
 import pytest
 from pydantic import ValidationError
 
+from core.artifacts import ArtifactSealAuthority
 from core.safety import ApprovalAuthority, ApprovalError, KillSwitch
+from core.t3.binding import RuntimeBinding, canonical_digest, host_key_identity
 from core.t3.enumeration import (
     T3B_PROFILE,
     WINDOWS_ACTION_REGISTRY,
@@ -74,6 +76,7 @@ class FakeSession:
 class FakeTransport:
     execution_mode = ExecutionMode.OFFLINE_MOCK
     network_capable = False
+    transport_type = "offline_fake"
 
     def __init__(self, session):
         self.session = session
@@ -89,7 +92,7 @@ def prerequisite(**updates):
         evidence_ref="t3a-run:original",
         run_id="original",
         asset_id="asset-1",
-        runtime_binding_fingerprint="runtime-1",
+        runtime_binding_fingerprint=runtime_binding().fingerprint,
         evidence_fingerprint="e" * 64,
         observed_at="2026-01-01T00:00:00+00:00",
         original_verified_evidence=True,
@@ -121,7 +124,7 @@ def bindings(p=None, prereq=None, registry=WINDOWS_ACTION_REGISTRY):
         p or proposal(),
         asset=ASSET,
         profile_fingerprint="profile-1",
-        runtime_binding_fingerprint="runtime-1",
+        runtime_binding_fingerprint=runtime_binding().fingerprint,
         credential_ref="credential:fake",
         prerequisite=prereq or prerequisite(),
         registry=registry,
@@ -130,15 +133,41 @@ def bindings(p=None, prereq=None, registry=WINDOWS_ACTION_REGISTRY):
 
 def plan(p=None, prereq=None):
     selected = p or proposal()
-    bound = bindings(selected, prereq)
+    selected_prerequisite = prereq or prerequisite()
+    bound = bindings(selected, selected_prerequisite)
     return T3BExecutionPlan(
         "asset-1",
         ASSET["target"],
         22,
         ASSET["ssh_host_key"],
         "credential:fake",
+        selected_prerequisite.run_id,
+        runtime_binding(),
         bound,
         tuple(WINDOWS_ACTION_REGISTRY[x] for x in selected.command_ids),
+    )
+
+
+def runtime_binding():
+    algorithm, fingerprint = host_key_identity(ASSET["ssh_host_key"])
+    return RuntimeBinding(
+        asset_id="asset-1",
+        target_identity=canonical_digest({"asset_id": "asset-1", "target": ASSET["target"]}),
+        host=ASSET["target"],
+        port=22,
+        credential_ref="credential:fake",
+        principal="fake-user",
+        host_key_algorithm=algorithm,
+        host_key_fingerprint=fingerprint,
+        transport_type="offline_fake",
+        runtime_config_digest="runtime-digest",
+        asset_registry_digest="asset-digest",
+        policy_digest="policy-digest",
+        profile_digest="profile-digest",
+        prerequisite_stage="authorized_access",
+        prerequisite_capability="t3-authorized-access-bounded",
+        session_limits_digest="limits-digest",
+        action_registry_digest="t3a-registry-digest",
     )
 
 
@@ -351,7 +380,11 @@ def test_approval_single_use_run_and_replay_are_offline(tmp_path):
         runs_root=tmp_path / "runs",
     )
     before = (resolver.calls, transport.calls)
-    replay = replay_t3b(run_dir, bound)
+    replay = replay_t3b(
+        run_dir,
+        bound,
+        seal_authority=ArtifactSealAuthority.from_approval_authority(authority),
+    )
     assert replay["completed"]
     assert (resolver.calls, transport.calls) == before == (1, 1)
     serialized = "".join(

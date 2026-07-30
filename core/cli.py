@@ -234,10 +234,14 @@ def _t3_proposal(args):
 
 def _t3_composition(args):
     if args.profile_id == "windows-host-enumeration-readonly":
+        from core.artifacts import ArtifactSealAuthority
         from core.t3.enumeration_runtime import compose_t3b_runtime
 
         if not args.prerequisite_run_dir:
             raise SystemExit("T3-B requires --prerequisite-run-dir")
+        artifact_approval_authority = _approval_authority(args.approval_spent_dir)
+        if artifact_approval_authority is None:
+            raise SystemExit("HARNESS_APPROVAL_SECRET is required for artifact verification")
         try:
             return compose_t3b_runtime(
                 proposal=_t3_proposal(args),
@@ -246,6 +250,9 @@ def _t3_composition(args):
                 profiles_path=args.profiles,
                 policy_path=args.policy,
                 prerequisite_run_dir=args.prerequisite_run_dir,
+                artifact_authority=ArtifactSealAuthority.from_approval_authority(
+                    artifact_approval_authority
+                ),
             )
         except Exception as exc:
             raise SystemExit("T3-B runtime configuration is not ready") from exc

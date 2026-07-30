@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from core.artifacts import ArtifactSealAuthority
 from core.policy import Policy, T3PolicyRequest, Verdict
 from core.profiles import AssetRegistry, ProfileCatalog
 from core.safety import ApprovalAuthority, KillSwitch, profile_fingerprint
@@ -84,6 +85,7 @@ def compose_t3b_runtime(
     profiles_path: str | Path,
     policy_path: str | Path,
     prerequisite_run_dir: str | Path,
+    artifact_authority: ArtifactSealAuthority,
     execution_mode: ExecutionMode = ExecutionMode.LAB_REAL,
     now: datetime | None = None,
 ) -> T3BComposition:
@@ -126,7 +128,10 @@ def compose_t3b_runtime(
     )
     if policy_decision.verdict is not Verdict.REQUIRE_APPROVAL:
         raise ValueError("T3-B policy authorization denied")
-    prerequisite = load_t3a_prerequisite(prerequisite_run_dir)
+    prerequisite = load_t3a_prerequisite(
+        prerequisite_run_dir,
+        seal_authority=artifact_authority,
+    )
     max_age = policy.t3_prerequisite_max_age_seconds
     skew = policy.t3_prerequisite_clock_skew_seconds
     validate_prerequisite_freshness(
@@ -177,6 +182,8 @@ def compose_t3b_runtime(
         22,
         config.pinned_host_key,
         config.credential_ref,
+        prerequisite.run_id,
+        current_runtime,
         bindings,
         tuple(WINDOWS_ACTION_REGISTRY[item] for item in proposal.command_ids),
     )
@@ -204,8 +211,6 @@ def execute_t3b_composition(
     """The transport is explicit so tests remain fake-backed."""
     selected_resolver = resolver or OperatorFileLabSshCredentialResolver(composition.config)
     mode = getattr(transport, "execution_mode", None)
-    if mode != ExecutionMode(composition.bindings.execution_mode):
-        raise ValueError("transport execution mode does not match approved composition")
     executor = T3BExecutor(
         selected_resolver,
         transport,

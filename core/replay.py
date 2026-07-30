@@ -10,6 +10,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from core.artifacts import ArtifactSealAuthority
 from core.schemas.models import ToolMode, TraceEvent, TraceEventType
 
 _ZERO_DIGEST = "0" * 64
@@ -73,10 +74,16 @@ def validate_run_artifacts(
     run_dir: str | Path,
     *,
     require_digest_chain: bool = True,
+    seal_authority: ArtifactSealAuthority | None = None,
 ) -> ArtifactValidation:
     """Parse and validate manifest/result/trace as one indivisible audit record."""
 
     root = Path(run_dir)
+    if seal_authority is None:
+        return ArtifactValidation(False, "artifact_seal_verifier_required", {}, {}, ())
+    seal_error = seal_authority.verify(root)
+    if seal_error:
+        return ArtifactValidation(False, seal_error, {}, {}, ())
     try:
         manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
         result = json.loads((root / "result.json").read_text(encoding="utf-8"))

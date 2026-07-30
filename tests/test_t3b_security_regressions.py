@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import ipaddress
 import json
+import socket
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -12,6 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from core.artifacts import SEAL_FILENAME, ArtifactSealAuthority
 from core.replay import validate_run_artifacts
 from core.safety import ApprovalAuthority, ApprovalError, KillSwitch
 from core.schemas.models import ToolMode, TraceEventType
@@ -20,15 +23,18 @@ from core.t3.enumeration import (
     T3B_PROFILE,
     ExecutionMode,
     T3BExecutor,
+    T3BOutputLimits,
     WindowsActionId,
     _ParamikoT3BSession,
     load_t3a_prerequisite,
+    run_t3b,
 )
 from core.t3.enumeration_runtime import (
     T3BComposition,
     execute_t3b_composition,
     validate_prerequisite_freshness,
 )
+from core.t3.executor import LabSshTransportResult
 from core.trace.writer import TraceWriter
 from tests.test_t3_enumeration import (
     FakeResolver,
@@ -41,13 +47,20 @@ from tests.test_t3_enumeration import (
 )
 
 
-def _valid_t3a(tmp_path):
-    run_id = "fixture-t3a"
+def _valid_t3a(tmp_path, run_id="fixture-t3a"):
     root = tmp_path / run_id
     root.mkdir(parents=True)
     created = datetime.now(timezone.utc).isoformat()
     (root / "manifest.json").write_text(
-        json.dumps({"run_id": run_id, "created_utc": created, "schema_version": "v1"})
+        json.dumps(
+            {
+                "run_id": run_id,
+                "created_utc": created,
+                "schema_version": "v1",
+                "execution_mode": "lab_real",
+                "stage": "authorized_access",
+            }
+        )
     )
     trace = TraceWriter(run_id, root / "trace.jsonl")
     trace.emit(
@@ -129,7 +142,29 @@ def _valid_t3a(tmp_path):
             }
         )
     )
+    artifact_authority().seal(root)
     return root
+
+
+def artifact_authority():
+    return ArtifactSealAuthority.for_test(b"s" * 32)
+
+
+def _rechain(root):
+    previous = "0" * 64
+    output = []
+    for seq, line in enumerate((root / "trace.jsonl").read_text().splitlines()):
+        event = json.loads(line)
+        event["seq"] = seq
+        event["previous_digest"] = previous
+        event.pop("event_digest", None)
+        digest = hashlib.sha256(
+            json.dumps(event, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        event["event_digest"] = digest
+        previous = digest
+        output.append(json.dumps(event, separators=(",", ":")))
+    (root / "trace.jsonl").write_text("\n".join(output) + "\n")
 
 
 @pytest.mark.parametrize("mutation", ["event", "digest", "foreign_run", "duplicate", "gap"])
@@ -150,7 +185,7 @@ def test_modified_t3a_artifacts_are_rejected(tmp_path, mutation):
     lines[4] = json.dumps(event)
     (root / "trace.jsonl").write_text("\n".join(lines) + "\n")
     with pytest.raises(ValueError, match="prerequisite rejected"):
-        load_t3a_prerequisite(root)
+        load_t3a_prerequisite(root, seal_authority=artifact_authority())
 
 
 def test_manifest_result_trace_mismatch_and_truncation_fail_closed(tmp_path):
@@ -158,12 +193,18 @@ def test_manifest_result_trace_mismatch_and_truncation_fail_closed(tmp_path):
     result_doc = json.loads((root / "result.json").read_text())
     result_doc["run_id"] = "other"
     (root / "result.json").write_text(json.dumps(result_doc))
-    assert validate_run_artifacts(root).code == "artifact_run_id_mismatch"
+    assert (
+        validate_run_artifacts(root, seal_authority=artifact_authority()).code
+        == "artifact_seal_content_mismatch"
+    )
 
     root = _valid_t3a(tmp_path / "second")
     raw = (root / "trace.jsonl").read_bytes()
     (root / "trace.jsonl").write_bytes(raw[:-3])
-    assert validate_run_artifacts(root).code == "malformed_or_truncated_artifacts"
+    assert (
+        validate_run_artifacts(root, seal_authority=artifact_authority()).code
+        == "malformed_artifact_seal"
+    )
 
 
 @pytest.mark.parametrize(
@@ -182,13 +223,105 @@ def test_wrong_t3a_result_binding_or_outcome_is_rejected(tmp_path, field, value)
     document[field] = value
     (root / "result.json").write_text(json.dumps(document))
     with pytest.raises(ValueError):
-        load_t3a_prerequisite(root)
+        load_t3a_prerequisite(root, seal_authority=artifact_authority())
 
 
 def test_valid_schema_compatible_t3a_fixture_is_accepted(tmp_path):
-    prerequisite = load_t3a_prerequisite(_valid_t3a(tmp_path))
+    prerequisite = load_t3a_prerequisite(
+        _valid_t3a(tmp_path),
+        seal_authority=artifact_authority(),
+    )
     assert prerequisite.verified
     assert prerequisite.stage == "authorized_access"
+
+
+def test_recalculated_trace_chain_is_rejected_without_valid_authenticated_seal(tmp_path):
+    root = _valid_t3a(tmp_path)
+    rows = (root / "trace.jsonl").read_text().splitlines()
+    event = json.loads(rows[5])
+    event["text"] = "attacker-rewritten event"
+    rows[5] = json.dumps(event)
+    (root / "trace.jsonl").write_text("\n".join(rows) + "\n")
+    _rechain(root)
+    validated = validate_run_artifacts(root, seal_authority=artifact_authority())
+    assert not validated.valid
+    assert validated.code == "artifact_seal_content_mismatch"
+
+
+def test_synchronized_artifact_rewrite_is_rejected(tmp_path):
+    root = _valid_t3a(tmp_path)
+    manifest = json.loads((root / "manifest.json").read_text())
+    result_doc = json.loads((root / "result.json").read_text())
+    manifest["run_id"] = result_doc["run_id"] = "rewritten-run"
+    manifest["execution_mode"] = "offline_mock"
+    result_doc["execution_mode"] = "offline_mock"
+    (root / "manifest.json").write_text(json.dumps(manifest))
+    (root / "result.json").write_text(json.dumps(result_doc))
+    rows = []
+    for line in (root / "trace.jsonl").read_text().splitlines():
+        event = json.loads(line)
+        event["run_id"] = "rewritten-run"
+        rows.append(json.dumps(event))
+    (root / "trace.jsonl").write_text("\n".join(rows) + "\n")
+    _rechain(root)
+    assert (
+        validate_run_artifacts(root, seal_authority=artifact_authority()).code
+        == "artifact_seal_content_mismatch"
+    )
+
+
+def test_missing_malformed_wrong_key_and_copied_seals_are_rejected(tmp_path):
+    missing = _valid_t3a(tmp_path / "missing")
+    (missing / SEAL_FILENAME).unlink()
+    assert (
+        validate_run_artifacts(missing, seal_authority=artifact_authority()).code
+        == "missing_artifact_seal"
+    )
+
+    malformed = _valid_t3a(tmp_path / "malformed")
+    (malformed / SEAL_FILENAME).write_text("{")
+    assert (
+        validate_run_artifacts(malformed, seal_authority=artifact_authority()).code
+        == "malformed_artifact_seal"
+    )
+
+    wrong_key = _valid_t3a(tmp_path / "wrong")
+    wrong_authority = ArtifactSealAuthority.for_test(
+        b"w" * 32,
+        key_id=artifact_authority().key_id,
+    )
+    assert (
+        validate_run_artifacts(wrong_key, seal_authority=wrong_authority).code
+        == "invalid_artifact_seal"
+    )
+
+    source = _valid_t3a(tmp_path / "source", "source-run")
+    destination = _valid_t3a(tmp_path / "destination", "destination-run")
+    (destination / SEAL_FILENAME).write_bytes((source / SEAL_FILENAME).read_bytes())
+    assert (
+        validate_run_artifacts(destination, seal_authority=artifact_authority()).code
+        == "artifact_seal_content_mismatch"
+    )
+
+
+@pytest.mark.parametrize(
+    "artifact,field,value",
+    [
+        ("manifest.json", "run_id", "changed-run"),
+        ("manifest.json", "execution_mode", "offline_mock"),
+        ("result.json", "status", "failed"),
+        ("result.json", "completed", False),
+    ],
+)
+def test_seal_rejects_changed_identity_mode_or_result(tmp_path, artifact, field, value):
+    root = _valid_t3a(tmp_path)
+    document = json.loads((root / artifact).read_text())
+    document[field] = value
+    (root / artifact).write_text(json.dumps(document))
+    assert (
+        validate_run_artifacts(root, seal_authority=artifact_authority()).code
+        == "artifact_seal_content_mismatch"
+    )
 
 
 def test_prerequisite_freshness_boundaries_and_timezone_conversion():
@@ -331,6 +464,7 @@ def test_every_approval_bound_field_change_invalidates_token(tmp_path, field, va
 class NetworkTransport:
     execution_mode = ExecutionMode.LAB_REAL
     network_capable = True
+    transport_type = "ssh_paramiko"
 
     def __init__(self):
         self.calls = 0
@@ -338,6 +472,125 @@ class NetworkTransport:
     def open(self, connection, credential):
         self.calls += 1
         raise AssertionError("network transport must not be reached")
+
+
+def real_plan():
+    selected = plan()
+    runtime = replace(selected.runtime_binding, transport_type="ssh_paramiko")
+    bindings = replace(
+        selected.bindings,
+        execution_mode="lab_real",
+        runtime_binding_fingerprint=runtime.fingerprint,
+    )
+    return replace(selected, runtime_binding=runtime, bindings=bindings)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "target",
+        "port",
+        "host_key",
+        "credential_ref",
+        "execution_mode",
+        "transport_type",
+        "action_definition",
+        "registry_digest",
+        "session_limit",
+        "prerequisite_identity",
+    ],
+)
+def test_post_approval_plan_substitution_fails_before_consumption_or_io(
+    tmp_path, monkeypatch, mutation
+):
+    original = plan()
+    mutated = original
+    transport = FakeTransport(FakeSession([result("{}")]))
+    if mutation == "target":
+        mutated = replace(mutated, target="changed.invalid")
+    elif mutation == "port":
+        mutated = replace(mutated, port=2222)
+    elif mutation == "host_key":
+        mutated = replace(mutated, pinned_host_key="ssh-ed25519 " + "B" * 68)
+    elif mutation == "credential_ref":
+        mutated = replace(mutated, credential_ref="credential:changed")
+    elif mutation == "execution_mode":
+        transport.execution_mode = ExecutionMode.LAB_REAL
+        transport.network_capable = True
+    elif mutation == "transport_type":
+        transport.transport_type = "winrm"
+    elif mutation == "action_definition":
+        mutated = replace(
+            mutated,
+            definitions=(replace(mutated.definitions[0], verifier="changed"),),
+        )
+    elif mutation == "registry_digest":
+        mutated = replace(
+            mutated,
+            bindings=replace(mutated.bindings, registry_digest="changed"),
+        )
+    elif mutation == "session_limit":
+        mutated = replace(
+            mutated,
+            bindings=replace(mutated.bindings, total_timeout_seconds=61),
+        )
+    else:
+        mutated = replace(mutated, prerequisite_run_id="changed-run")
+
+    network_calls = []
+
+    def forbidden_network(*args, **kwargs):
+        network_calls.append((args, kwargs))
+        raise AssertionError("network-capable boundary reached")
+
+    monkeypatch.setattr(socket, "getaddrinfo", forbidden_network)
+    monkeypatch.setattr(socket, "create_connection", forbidden_network)
+
+    authority = ApprovalAuthority(b"a" * 32, tmp_path / "spent")
+    token = authority.issue(
+        original.asset_id,
+        T3B_PROFILE,
+        original.bindings.fingerprint,
+        credential_id=original.credential_ref,
+        action_fingerprint=original.bindings.fingerprint,
+    )
+    resolver = FakeResolver()
+    run_dir = run_t3b(
+        plan=mutated,
+        prerequisite=prerequisite(),
+        executor=T3BExecutor(resolver, transport),
+        authority=authority,
+        approval_token=token,
+        runs_root=tmp_path / "runs",
+    )
+    assert resolver.calls == transport.calls == 0
+    assert network_calls == []
+    stored = json.loads((run_dir / "result.json").read_text())
+    assert stored["rule"] == "runtime_binding_mismatch"
+    assert stored["completed"] is False
+    trace_text = (run_dir / "trace.jsonl").read_text()
+    assert "runtime_binding_mismatch" in trace_text
+    assert "observation_verified" not in trace_text
+
+    # A failed pre-execution binding check must not spend the valid approval.
+    authority.verify_and_consume(
+        token,
+        original.asset_id,
+        T3B_PROFILE,
+        original.bindings.fingerprint,
+        credential_id=original.credential_ref,
+        action_fingerprint=original.bindings.fingerprint,
+    )
+
+
+def test_direct_executor_rejects_substituted_plan_before_resolver_or_transport():
+    original = plan()
+    resolver = FakeResolver()
+    transport = FakeTransport(FakeSession([result("{}")]))
+    outcome = T3BExecutor(resolver, transport).run(replace(original, target="changed.invalid"))
+    assert outcome.trace_codes == ("runtime_binding_mismatch",)
+    assert resolver.calls == transport.calls == 0
+    assert not outcome.action_evidence
 
 
 @pytest.mark.parametrize("enablement", [None, "", "false", "TRUE", "1"])
@@ -349,7 +602,7 @@ def test_direct_real_executor_denied_before_resolver_or_transport(monkeypatch, e
         transport,
         execution_mode=ExecutionMode.LAB_REAL,
         enablement=enablement,
-    ).run(replace(plan(), bindings=replace(plan().bindings, execution_mode="lab_real")))
+    ).run(real_plan())
     assert not outcome.completed
     assert resolver.calls == transport.calls == 0
     assert "execution_boundary_denied" in outcome.trace_codes
@@ -357,11 +610,7 @@ def test_direct_real_executor_denied_before_resolver_or_transport(monkeypatch, e
 
 def test_direct_composition_call_cannot_bypass_execution_opt_in(tmp_path, monkeypatch):
     monkeypatch.delenv("T3_LAB_EXECUTION_ENABLED", raising=False)
-    selected_plan = plan()
-    selected_plan = replace(
-        selected_plan,
-        bindings=replace(selected_plan.bindings, execution_mode="lab_real"),
-    )
+    selected_plan = real_plan()
     prereq = prerequisite()
     composition = T3BComposition(
         proposal(),
@@ -436,6 +685,145 @@ def test_stdout_stderr_and_decode_metadata_remain_separate():
     assert evidence.stderr_decoding_errors
     assert evidence.stdout_original_bytes == evidence.stdout_retained_bytes
     assert evidence.stderr_original_bytes == evidence.stderr_retained_bytes
+
+
+def _raw(stdout: bytes, stderr: bytes = b"", code: int = 0):
+    return LabSshTransportResult(stdout, stderr, code)
+
+
+@pytest.mark.parametrize(
+    "stdout,stderr,limits,expected_stdout,expected_stderr",
+    [
+        (b"x" * 20, b"", T3BOutputLimits(8, 8, 16, 16), 8, 0),
+        (b"", b"e" * 20, T3BOutputLimits(8, 7, 16, 16), 0, 7),
+        (b"x" * 12, b"FATAL!" * 2, T3BOutputLimits(20, 20, 14, 14), 2, 12),
+    ],
+)
+def test_actual_retained_bytes_drive_stream_truncation_metadata(
+    stdout, stderr, limits, expected_stdout, expected_stderr
+):
+    outcome = T3BExecutor(
+        FakeResolver(),
+        FakeTransport(FakeSession([_raw(stdout, stderr)])),
+        output_limits=limits,
+    ).run(plan())
+    evidence = outcome.action_evidence[0]
+    assert evidence.stdout_original_bytes == len(stdout)
+    assert evidence.stderr_original_bytes == len(stderr)
+    assert evidence.stdout_retained_bytes == expected_stdout
+    assert evidence.stderr_retained_bytes == expected_stderr
+    assert evidence.stdout_truncated is (expected_stdout < len(stdout))
+    assert evidence.stderr_truncated is (expected_stderr < len(stderr))
+    assert evidence.verification_status != "verified"
+
+
+def test_cumulative_run_budget_truncates_later_action():
+    selected = proposal(
+        WindowsActionId.OS_VERSION,
+        WindowsActionId.RUNNING_SERVICES,
+    )
+    first = json.dumps({"Caption": "W", "Version": "1", "BuildNumber": "2"}).encode()
+    second = json.dumps({"Name": "svc", "Status": "Running"}).encode()
+    run_limit = len(first) + 5
+    outcome = T3BExecutor(
+        FakeResolver(),
+        FakeTransport(FakeSession([_raw(first), _raw(second)])),
+        output_limits=T3BOutputLimits(100, 20, 100, run_limit),
+    ).run(plan(selected))
+    assert outcome.action_evidence[0].stdout_truncated is False
+    assert outcome.action_evidence[1].stdout_retained_bytes == 5
+    assert outcome.action_evidence[1].stdout_truncated is True
+    assert outcome.action_evidence[1].verification_status != "verified"
+    assert "total_output_limit_reached" in outcome.trace_codes
+
+
+def test_stderr_is_truncated_by_remaining_cumulative_budget():
+    selected = proposal(
+        WindowsActionId.OS_VERSION,
+        WindowsActionId.RUNNING_SERVICES,
+    )
+    first = json.dumps({"Caption": "W", "Version": "1", "BuildNumber": "2"}).encode()
+    second_stdout = b"{}"
+    second_stderr = b"fatal-diagnostic"
+    outcome = T3BExecutor(
+        FakeResolver(),
+        FakeTransport(FakeSession([_raw(first), _raw(second_stdout, second_stderr)])),
+        output_limits=T3BOutputLimits(
+            100,
+            100,
+            100,
+            len(first) + 5,
+        ),
+    ).run(plan(selected))
+    evidence = outcome.action_evidence[1]
+    assert evidence.stderr == "fatal"
+    assert evidence.stderr_retained_bytes == 5
+    assert evidence.stderr_truncated
+    assert evidence.stdout_retained_bytes == 0
+    assert evidence.verification_status != "verified"
+
+
+def test_utf8_boundary_and_invalid_bytes_cannot_verify():
+    prefix = b'{"Caption":"W","Version":"1","BuildNumber":"2"}'
+    for payload, limit in (
+        (prefix + "\N{EURO SIGN}".encode(), len(prefix) + 1),
+        (prefix + b"\xff", len(prefix) + 1),
+    ):
+        outcome = T3BExecutor(
+            FakeResolver(),
+            FakeTransport(FakeSession([_raw(payload)])),
+            output_limits=T3BOutputLimits(limit, 8, limit, limit),
+        ).run(plan())
+        evidence = outcome.action_evidence[0]
+        assert evidence.stdout_decoding_errors
+        assert evidence.verification_status != "verified"
+
+
+def test_important_stderr_is_retained_before_noisy_stdout():
+    outcome = T3BExecutor(
+        FakeResolver(),
+        FakeTransport(FakeSession([_raw(b"x" * 100, b"FATAL")])),
+        output_limits=T3BOutputLimits(100, 10, 10, 10),
+    ).run(plan())
+    evidence = outcome.action_evidence[0]
+    assert evidence.stderr == "FATAL"
+    assert evidence.stdout_retained_bytes == 5
+    assert evidence.stdout_truncated
+
+
+def test_truncation_metadata_is_persisted_and_never_verified(tmp_path):
+    selected_plan = plan()
+    authority = ApprovalAuthority(b"a" * 32, tmp_path / "spent")
+    token = authority.issue(
+        selected_plan.asset_id,
+        T3B_PROFILE,
+        selected_plan.bindings.fingerprint,
+        credential_id=selected_plan.credential_ref,
+        action_fingerprint=selected_plan.bindings.fingerprint,
+    )
+    executor = T3BExecutor(
+        FakeResolver(),
+        FakeTransport(FakeSession([_raw(b"x" * 20, b"fatal-error")])),
+        output_limits=T3BOutputLimits(8, 5, 10, 10),
+    )
+    run_dir = run_t3b(
+        plan=selected_plan,
+        prerequisite=prerequisite(),
+        executor=executor,
+        authority=authority,
+        approval_token=token,
+        runs_root=tmp_path / "runs",
+    )
+    result_doc = json.loads((run_dir / "result.json").read_text())
+    evidence = result_doc["outcome"]["action_evidence"][0]
+    assert evidence["stdout_original_bytes"] == 20
+    assert evidence["stdout_retained_bytes"] == 5
+    assert evidence["stdout_truncated"] is True
+    assert evidence["stderr_original_bytes"] == 11
+    assert evidence["stderr_retained_bytes"] == 5
+    assert evidence["stderr_truncated"] is True
+    assert evidence["verification_status"] != "verified"
+    assert "observation_verified" not in (run_dir / "trace.jsonl").read_text()
 
 
 class _Stream:

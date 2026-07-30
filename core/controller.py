@@ -24,6 +24,7 @@ from pathlib import Path
 import yaml
 
 from core.adapters.base import AgentAdapter, RunContext
+from core.artifacts import ArtifactSealAuthority
 from core.enforcement import (
     authorize_execution,
     effective_approval_fingerprint,
@@ -195,6 +196,7 @@ class Controller:
             "schema_version": SCHEMA_VERSION,
             "policy_gated": True,
             "mock_only": not (lab_executor or bounded_executor),
+            "execution_mode": ("lab_real" if lab_executor or bounded_executor else "offline_mock"),
         }
         (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
@@ -250,6 +252,8 @@ class Controller:
                 ),
             }
             (run_dir / "result.json").write_text(json.dumps(redactor.value(result), indent=2))
+            if self.approval_authority is not None:
+                ArtifactSealAuthority.from_approval_authority(self.approval_authority).seal(run_dir)
             return run_dir
 
         # A. Revalidate model instances too: model_copy(update=...) can bypass checks.

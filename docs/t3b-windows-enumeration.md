@@ -94,6 +94,18 @@ starts; partial evidence is retained and the run is not verified.
 Replay and prerequisite loading use the same strict digest-chain/state-machine
 validator. Missing, truncated, reordered, cross-run, policy-denied, cancelled,
 or result/trace-inconsistent artifacts fail closed and are never repaired.
+Successful T3-A and T3-B artifact sets also carry a versioned HMAC final seal
+derived from operator-held approval key material. The seal covers the run ID,
+final trace-chain and complete trace digests, manifest and result digests,
+execution mode, stage, capability, format version, and non-secret key ID. The
+key is never written into the run directory. Strict prerequisite loading and
+T3-B replay require an explicit verifier and reject missing, malformed,
+wrong-key, copied, or content-inconsistent seals.
+
+This authenticated seal prevents an artifact-directory writer who lacks the
+operator key from legitimizing a rewritten hash chain. It does not protect
+against compromise of the operator process/key or replacement of the verifier
+configuration; operating-system controls must still restrict both.
 Replay reads only redacted stored artifacts. It does not resolve credentials,
 open a transport, contact the target, or rerun an action. It deterministically
 rechecks action predicates, cleanup, and approval/registry/profile/asset/
