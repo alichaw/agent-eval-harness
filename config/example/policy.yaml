@@ -6,6 +6,7 @@ default: deny
 # T1 recon (autonomous) + T2 scan (approval). T3 exploit tools are ABSENT here
 # AND have no profile — the agent has no capability to invoke them at all.
 allowed_tools:
+  - t3-ssh-reachability
   # T1 · recon (low risk, autonomous)
   - nmap
   - arp-scan
@@ -62,11 +63,25 @@ allowed_targets:
 # authorised segment. Production, OT, and other teams must NEVER be scanned.
 # Fill from the authorised scope's exclusion list.
 denied_targets: []
+  # REQUIRED FOR T3: replace with the written authorization's complete company,
+  # production, management, VPN, and other exclusion CIDRs. T3 state production
+  # fails closed while this list is empty.
   # - 10.0.0.0/24          # production servers — NEVER   (example)
   # - 10.99.0.0/16         # OT / ICS — NEVER             (example)
   # - 10.50.0.0/16         # other department — NEVER     (example)
 
 max_cost_usd: 1.0
+
+# Canonical T3 capabilities and stages are server-owned. Copy these exact IDs to
+# ignored local policy only when the written lab authorization includes them.
+t3_allowed_capabilities:
+  - t3-access-bounded
+  - t3-authorized-access-bounded
+  - windows-host-enumeration-readonly
+t3_allowed_stages:
+  - initial_access
+  - authorized_access
+  - windows_enumeration
 
 # extra blacklist layer (on top of the allowlist) — block exploit/vuln scripts
 deny_flags:

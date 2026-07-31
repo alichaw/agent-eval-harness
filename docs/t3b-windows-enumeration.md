@@ -121,8 +121,11 @@ lateral movement, or privilege escalation capability.
 
 Use the existing `t3-ready`, `t3-approve`, and `t3-run` commands with
 `--profile-id windows-host-enumeration-readonly`,
-one or more supported `--command-id` values, and
 `--prerequisite-run-dir` pointing to the original verified T3-A run. T3-B
+always executes the complete five-action canonical registry in its fixed order.
+The CLI rejects `--command-id` for T3-B so an operator cannot mistake a displayed
+subset for the approval-bound execution scope. `--investigation-state` is not used
+for T3-B; the sealed original T3-A run is the only stage prerequisite. T3-B
 readiness is offline and prints the stage, asset, profile, ordered actions,
 prerequisite reference, limits, expiry at approval time, registry digest, and
 runtime binding without credential material. The manifest and trace record the

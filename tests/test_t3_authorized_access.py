@@ -146,8 +146,6 @@ def cli_args(files):
         T3_AUTHORIZED_ACCESS_PROFILE,
         "--objective",
         "Validate approved bounded SSH access",
-        "--command-id",
-        "current_identity",
         "--runtime-config",
         str(config_path),
         "--assets",

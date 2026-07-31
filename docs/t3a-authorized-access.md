@@ -16,8 +16,9 @@ error-free, same-asset evidence that structurally identifies reachable/open
 TCP port 22 as SSH or OpenSSH.
 
 The separate profile is mandatory; credential presence does not infer access
-intent. Both proposal schemas expose only the asset, profile, descriptive
-objective, and fixed command IDs. The executable, target, port, username,
+intent. The authorized-access proposal exposes only the asset and profile; its
+three command IDs are fixed by the canonical registry, and the CLI rejects
+`--command-id` for this profile. The executable, target, port, username,
 credential reference, private key, pinned host key, SSH options, timeouts, and
 session policy remain operator-controlled.
 

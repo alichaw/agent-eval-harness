@@ -2,6 +2,28 @@
 # profile_id; the Harness produces the real tool/params. Model cannot modify these.
 profiles:
 
+  windows-ssh-reachability-check:
+    description: One bounded TCP/22 reachability check for a registered Windows OpenSSH lab host.
+    interaction_mode: active
+    risk_tier: low
+    allowed_asset_types: [host]
+    tool_id: t3-ssh-reachability
+    parameters:
+      action_id: t3a.ssh22_reachability.v1
+      port: 22
+    limits:
+      max_targets: 1
+      max_ports: 1
+      max_tool_calls: 1
+      max_duration_seconds: 5
+      max_requests_per_second: 1
+      max_retries: 0
+    internet_egress: false
+    approval_required: false
+    evidence_required:
+      - target_access_log
+      - structured_tcp22_reachability
+
   t3-access-bounded:
     description: One approved, read-only SSH session to an explicitly registered isolated lab.
     interaction_mode: active

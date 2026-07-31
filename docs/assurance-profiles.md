@@ -59,10 +59,61 @@ does not make an absent or malformed signed permit valid in the hardened
 endpoint. The Harness uses the separate fixed
 `/api/v1/t3a/poc-executions`/`/api/v1/t3b/poc-executions` adapter paths and
 sends only the post-approval canonical action plus an audit authorization ID.
-It never sends an assurance-profile selector. HexStrike must enable those
-routes only through its own trusted startup profile and only on loopback.
-Deploying that matching HexStrike endpoint is required before live PoC
-acceptance; the Harness does not fall back to a generic tool endpoint.
+It never sends an assurance-profile selector. HexStrike enables those routes
+only when its protected service environment sets
+`HEXSTRIKE_ASSURANCE_PROFILE=poc`; missing or unknown values never enable PoC
+routes. The root-owned `root:hexstrike` mode `0640`
+`/etc/hexstrike/t3-poc-runtime.json` binds the same asset, target-binding
+digest, and pinned host key. Requests contain only an authorization ID and the
+fixed operation ID. Target, port, credential reference, username, identity
+agent, pinned key, commands, and limits are resolved from protected server
+state. HexStrike atomically rejects reuse of a PoC authorization ID. The
+Harness does not fall back to a generic tool endpoint.
+
+The protected files have separate responsibilities:
+
+- Harness `config/local/t3-runtime.json` selects the trusted assurance profile
+  and binds T3-A/T3-B orchestration to the registered asset and credential
+  reference. It remains mode `0600` and is never read by HexStrike.
+- `/etc/hexstrike/t3-reachability.json` contains exactly `asset_id`, resolved
+  `target`, and fixed `port: 22`; it is shared preflight state.
+- `/etc/hexstrike/t3-poc-runtime.json` contains exactly
+  `assurance_profile: poc`, `asset_id`, the approved `target_binding` digest,
+  and `pinned_host_key`. It is the common T3-A/T3-B unsigned PoC execution
+  binding.
+- `/etc/hexstrike/job-targets.json` contains exactly the approved target `/32`
+  used by T3-A/T3-B, while `/etc/hexstrike/t3a-credentials.json` maps the fixed
+  credential reference to the same asset, low-privilege username, and protected
+  identity-agent socket.
+- `/etc/hexstrike/t3c-runtime.json` is separate scenario state for
+  `t3c.controlled_impact_proof.v1`. It contains the fixed source/destination,
+  private destination target, credential reference, identity agent, username,
+  pinned-known-hosts path, proof marker, rollback checkpoint, and isolated-lab
+  readiness assertions. It does not replace the common PoC runtime.
+
+Every `/etc/hexstrike/*.json` file above is required to be
+`root:hexstrike 0640`. The PoC unit names both
+`HEXSTRIKE_T3_POC_RUNTIME_CONFIG` and `HEXSTRIKE_T3C_CONFIG`; the former
+controls common T3-A/T3-B execution and the latter controls only T3-C.
+
+In the supported Harness flow, PoC authorization IDs are created only after the
+Harness atomically consumes a fresh stage-specific human approval. The opaque
+ID carries a 60-second issue time and a T3-A, T3-B, or T3-C stage tag.
+HexStrike validates the tag and age, then consumes it in one shared SQLite database at
+`/var/lib/hexstrike/spent-poc-authorizations.sqlite3`. A primary-key insert
+under an immediate transaction gives at most one consumer during concurrent
+requests and persists across service restart. The ID is not a signed
+delegation token, so HexStrike cannot independently prove that an otherwise
+well-formed fresh ID originated from the Harness approval flow. That downstream
+provenance control remains `SKIPPED_BY_PROFILE` and the PoC relies on loopback
+exposure plus operating-system access control. The fixed route plus protected
+server configuration constrains any accepted request to the only permitted
+asset, action, credential context, commands, and limits; it does not turn the
+opaque ID into a cryptographic action or asset binding.
+
+Offline tests prove the implementation and atomic replay behavior. Listener
+binding, service-account file access, protected runtime metadata, and real
+T3-A/T3-B/T3-C execution remain awaiting operator-reviewed live verification.
 
 ## Readiness semantics
 

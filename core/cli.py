@@ -213,6 +213,32 @@ def cmd_replay(args) -> int:
     return 0 if match else 1
 
 
+def cmd_t3_state(args) -> int:
+    """Produce canonical structured SSH/22 evidence; no credential or SSH login is used."""
+    if not args.confirm_lab_probe:
+        raise SystemExit("refusing network probe without --confirm-lab-probe")
+    from core.investigation.ssh_reachability import (
+        HexStrikeSshReachabilityExecutor,
+        produce_ssh_reachability_state,
+    )
+    from core.safety import KillSwitch
+
+    run_dir = produce_ssh_reachability_state(
+        asset_id=args.asset_id,
+        assets_path=args.assets,
+        profiles_path=args.profiles,
+        policy_path=args.policy,
+        runs_root=args.runs_root,
+        executor=HexStrikeSshReachabilityExecutor(),
+        kill_switch=KillSwitch(Path(args.kill_switch_file)),
+    )
+    result = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+    print(f"run dir : {run_dir}")
+    print(f"state   : {run_dir / 'investigation_state.json'}")
+    print(f"status  : {result['status']}")
+    return 0 if result["completed"] else 1
+
+
 def _t3_proposal(args):
     if args.profile_id == "windows-host-enumeration-readonly":
         from core.t3.enumeration import T3BAgentProposal
@@ -247,6 +273,10 @@ def _t3_composition(args):
 
         if not args.prerequisite_run_dir:
             raise SystemExit("T3-B requires --prerequisite-run-dir")
+        if args.command_id:
+            raise SystemExit(
+                "T3-B command selection is not supported; the canonical five-action set is fixed"
+            )
         artifact_approval_authority = _approval_authority(args.approval_spent_dir)
         if artifact_approval_authority is None:
             raise SystemExit("HARNESS_APPROVAL_SECRET is required for artifact verification")
@@ -266,6 +296,13 @@ def _t3_composition(args):
             raise SystemExit("T3-B runtime configuration is not ready") from exc
     from core.t3.runtime import compose_t3_runtime
 
+    if args.profile_id == "t3-authorized-access-bounded" and args.command_id:
+        raise SystemExit(
+            "authorized T3-A command selection is not supported; "
+            "the canonical three-action set is fixed"
+        )
+    if not args.investigation_state:
+        raise SystemExit("T3-A requires --investigation-state")
     try:
         return compose_t3_runtime(
             proposal=_t3_proposal(args),
@@ -292,7 +329,6 @@ def cmd_t3_ready(args) -> int:
         COMMON_CHECKS,
         DEFERRED_CHECKS,
         evaluate_readiness,
-        loopback_listener_ready,
     )
 
     composition = _t3_composition(args)
@@ -307,7 +343,6 @@ def cmd_t3_ready(args) -> int:
         and endpoint.path in {"", "/"}
         and not endpoint.query
         and not endpoint.fragment
-        and loopback_listener_ready(8888)
     )
     secret = os.environ.get("HARNESS_EXECUTION_PERMIT_SECRET", "")
     secret_file = Path("/etc/agent-eval-harness/t3-permit.env")
@@ -405,11 +440,9 @@ def cmd_t3_ready(args) -> int:
     return 0
 
 
-def cmd_t3_approve(args) -> int:
-    """Issue the exact action/session-bound T3-A approval."""
-    composition = _t3_composition(args)
+def _t3_approval_summary(args, composition) -> dict:
     if args.profile_id == "windows-host-enumeration-readonly":
-        approval_summary = {
+        return {
             "asset_id": composition.plan.asset_id,
             "resolved_target_identity": composition.bindings.resolved_target_identity,
             "profile_id": composition.bindings.profile_id,
@@ -419,26 +452,36 @@ def cmd_t3_approve(args) -> int:
             "runtime_binding_fingerprint": (composition.bindings.runtime_binding_fingerprint),
             "assurance_profile": composition.assurance.profile.value,
         }
-    else:
-        approval_summary = {
-            "asset_id": composition.request.source_asset_id,
-            "resolved_target_identity": canonical_digest(
-                {
-                    "asset_id": composition.request.source_asset_id,
-                    "target": composition.assets.resolve(composition.request.source_asset_id)[
-                        "target"
-                    ],
-                }
-            ),
-            "profile_id": composition.request.capability_id,
-            "stage": composition.request.stage.value,
-            "action_ids": list(composition.request.command_scope),
-            "justification": composition.request.written_justification,
-            "runtime_binding_fingerprint": (composition.runtime_binding_fingerprint),
-            "assurance_profile": composition.assurance.profile.value,
-        }
+    return {
+        "asset_id": composition.request.source_asset_id,
+        "resolved_target_identity": canonical_digest(
+            {
+                "asset_id": composition.request.source_asset_id,
+                "target": composition.assets.resolve(composition.request.source_asset_id)["target"],
+            }
+        ),
+        "profile_id": composition.request.capability_id,
+        "stage": composition.request.stage.value,
+        "action_ids": list(composition.request.command_scope),
+        "justification": composition.request.written_justification,
+        "runtime_binding_fingerprint": composition.runtime_binding_fingerprint,
+        "assurance_profile": composition.assurance.profile.value,
+    }
+
+
+def cmd_t3_scope(args) -> int:
+    """Display the exact canonical scope without issuing an approval."""
+    composition = _t3_composition(args)
+    print("Canonical approval request (unsigned):")
+    print(json.dumps(_t3_approval_summary(args, composition), indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_t3_approve(args) -> int:
+    """Issue the exact action/session-bound T3-A approval."""
+    composition = _t3_composition(args)
     print("Canonical approval request:")
-    print(json.dumps(approval_summary, indent=2, sort_keys=True))
+    print(json.dumps(_t3_approval_summary(args, composition), indent=2, sort_keys=True))
     authority = _approval_authority(args.approval_spent_dir)
     if authority is None:
         raise SystemExit("HARNESS_APPROVAL_SECRET is required")
@@ -553,16 +596,24 @@ def _add_t3_proposal_arguments(parser) -> None:
             "windows_running_services",
             "windows_installed_hotfixes",
         ],
+        help=(
+            "only for vulnerability-driven t3-access-bounded; authorized T3-A and T3-B "
+            "use fixed canonical action sets"
+        ),
     )
     parser.add_argument("--runtime-config", required=True)
     parser.add_argument("--assets", default="assets.yaml")
     parser.add_argument("--profiles", default="profiles.yaml")
     parser.add_argument("--policy", default="policy.yaml")
-    parser.add_argument("--investigation-state", required=True)
+    parser.add_argument(
+        "--investigation-state",
+        help="required for T3-A; unused for T3-B, whose prerequisite is the original T3-A run",
+    )
     parser.add_argument(
         "--prerequisite-run-dir",
         help="original verified T3-A run directory; required only for T3-B",
     )
+    parser.add_argument("--approval-spent-dir", default="config/local/approval-spent")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -644,12 +695,36 @@ def main(argv: list[str] | None = None) -> int:
     p_replay.add_argument("run_dir", help="path to runs/<run_id>")
     p_replay.set_defaults(func=cmd_replay)
 
+    p_t3_state = sub.add_parser(
+        "t3-state",
+        help="produce canonical Windows TCP/22 reachability investigation state",
+    )
+    p_t3_state.add_argument("--asset-id", required=True)
+    p_t3_state.add_argument("--assets", default="assets.yaml")
+    p_t3_state.add_argument("--profiles", default="profiles.yaml")
+    p_t3_state.add_argument("--policy", default="policy.yaml")
+    p_t3_state.add_argument("--runs-root", default="runs")
+    p_t3_state.add_argument("--kill-switch-file", default="config/local/KILL")
+    p_t3_state.add_argument(
+        "--confirm-lab-probe",
+        action="store_true",
+        help="confirm one fixed TCP/22 probe to the registered isolated-lab asset",
+    )
+    p_t3_state.set_defaults(func=cmd_t3_state)
+
     p_t3_ready = sub.add_parser(
         "t3-ready",
         help="validate T3-A operator configuration without credentials or network",
     )
     _add_t3_proposal_arguments(p_t3_ready)
     p_t3_ready.set_defaults(func=cmd_t3_ready)
+
+    p_t3_scope = sub.add_parser(
+        "t3-scope",
+        help="display the canonical T3 approval scope without issuing an approval",
+    )
+    _add_t3_proposal_arguments(p_t3_scope)
+    p_t3_scope.set_defaults(func=cmd_t3_scope)
 
     p_t3_approve = sub.add_parser(
         "t3-approve",
@@ -658,7 +733,6 @@ def main(argv: list[str] | None = None) -> int:
     _add_t3_proposal_arguments(p_t3_approve)
     p_t3_approve.add_argument("--ttl-seconds", type=int, default=300)
     p_t3_approve.add_argument("--output", required=True)
-    p_t3_approve.add_argument("--approval-spent-dir", default="config/local/approval-spent")
     p_t3_approve.set_defaults(func=cmd_t3_approve)
 
     p_t3_run = sub.add_parser(
@@ -667,7 +741,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     _add_t3_proposal_arguments(p_t3_run)
     p_t3_run.add_argument("--approval-token-file", required=True)
-    p_t3_run.add_argument("--approval-spent-dir", default="config/local/approval-spent")
     p_t3_run.add_argument("--runs-root", default="runs")
     p_t3_run.add_argument("--kill-switch-file", default="config/local/KILL")
     p_t3_run.set_defaults(func=cmd_t3_run)

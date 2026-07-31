@@ -1,5 +1,5 @@
 [Unit]
-Description=HexStrike bounded T3 execution service
+Description=HexStrike bounded T3 PoC execution service
 After=network.target
 
 [Service]
@@ -10,8 +10,10 @@ WorkingDirectory=/home/kali/hexstrike-ai
 Environment=HOME=/var/lib/hexstrike
 Environment=HEXSTRIKE_HOST=127.0.0.1
 Environment=HEXSTRIKE_PORT=8888
-Environment=HEXSTRIKE_ASSURANCE_PROFILE=hardened
-EnvironmentFile=/etc/hexstrike/t3-permit.env
+Environment=HEXSTRIKE_ASSURANCE_PROFILE=poc
+Environment=HEXSTRIKE_T3_REACHABILITY_CONFIG=/etc/hexstrike/t3-reachability.json
+Environment=HEXSTRIKE_T3_POC_RUNTIME_CONFIG=/etc/hexstrike/t3-poc-runtime.json
+Environment=HEXSTRIKE_T3C_CONFIG=/etc/hexstrike/t3c-runtime.json
 ExecStart=/home/kali/hexstrike-ai/hexstrike-env/bin/python3 /home/kali/hexstrike-ai/hexstrike_server.py
 Restart=on-failure
 NoNewPrivileges=true
@@ -19,6 +21,8 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/var/lib/hexstrike /run/hexstrike
+StateDirectory=hexstrike
+StateDirectoryMode=0750
 RuntimeDirectory=hexstrike
 RuntimeDirectoryMode=0750
 

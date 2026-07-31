@@ -1,0 +1,18 @@
+{
+  "assurance_profile": "poc",
+  "scenario_id": "lab.synthetic-marker.v1",
+  "source_asset_id": "asset:isolated-source",
+  "source_target": "10.77.0.10",
+  "destination_asset_id": "asset:isolated-destination",
+  "destination_target": "10.77.0.11",
+  "credential_ref": "credential:isolated-t3c",
+  "proof_marker": "OPERATOR_CONFIGURED_SYNTHETIC_MARKER",
+  "rollback_checkpoint": "snapshot:operator-recorded-clean-state",
+  "evidence_root": "runs/t3c",
+  "hexstrike_url": "http://127.0.0.1:8888",
+  "executor_type": "hexstrike_t3c_v1",
+  "allowlisted_targets": ["10.77.0.10", "10.77.0.11"],
+  "denied_networks": ["10.0.0.0/16", "10.1.0.0/16", "192.168.0.0/16"],
+  "isolated_lab": true,
+  "rollback_ready": true
+}

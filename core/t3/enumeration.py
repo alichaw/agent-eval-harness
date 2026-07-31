@@ -942,6 +942,16 @@ def run_t3b(
                 "mock_only": execution_mode is ExecutionMode.OFFLINE_MOCK,
                 "assurance_profile": assurance.profile.value,
                 "assurance_config_source": assurance.trusted_source,
+                "signed_permit_status": (
+                    "SKIPPED_BY_PROFILE"
+                    if assurance.profile is AssuranceProfile.POC
+                    else "REQUIRED"
+                ),
+                "signed_permit_reason": (
+                    "poc_profile"
+                    if assurance.profile is AssuranceProfile.POC
+                    else "hardened_profile"
+                ),
             },
             indent=2,
         )
@@ -1090,6 +1100,12 @@ def run_t3b(
         "runtime_binding_fingerprint": plan.bindings.runtime_binding_fingerprint,
         "assurance_profile": assurance.profile.value,
         "assurance_config_source": assurance.trusted_source,
+        "signed_permit_status": (
+            "SKIPPED_BY_PROFILE" if assurance.profile is AssuranceProfile.POC else "REQUIRED"
+        ),
+        "signed_permit_reason": (
+            "poc_profile" if assurance.profile is AssuranceProfile.POC else "hardened_profile"
+        ),
         # A run profile alone is not a production-readiness attestation.
         "production_ready": False,
         "aisvs_level_2_or_3_compliance_claimed": False,

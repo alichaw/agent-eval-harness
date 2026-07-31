@@ -24,6 +24,7 @@ from core.t3.access import (
 from core.t3.assurance import AssuranceContext, AssuranceProfile
 from core.t3.binding import canonical_digest
 from core.t3.executor import T3Executor
+from core.t3.poc_authorization import issue_poc_authorization_id
 
 T3A_OPERATION_ID = "windows.ssh.identity.v1"
 T3A_RESULT_SCHEMA = "hexstrike-t3a-result/v1"
@@ -112,7 +113,9 @@ class HexStrikeT3AExecutor(T3Executor):
             "result_schema": T3A_RESULT_SCHEMA,
         }
         hardened = self.assurance.profile is AssuranceProfile.HARDENED
-        authorization_id = str(claims["permit_id"])
+        authorization_id = (
+            str(claims["permit_id"]) if hardened else issue_poc_authorization_id("T3-A", now=now)
+        )
         token = issue_execution_permit(self.permit_secret, claims) if hardened else ""
         permit_digest = hashlib.sha256(token.encode()).hexdigest() if hardened else ""
         try:
@@ -127,11 +130,7 @@ class HexStrikeT3AExecutor(T3Executor):
                     if hardened
                     else {
                         "authorization_id": authorization_id,
-                        "canonical_action": {
-                            key: value
-                            for key, value in claims.items()
-                            if key not in {"schema_version", "permit_id", "nonce"}
-                        },
+                        "canonical_action": T3A_OPERATION_ID,
                     }
                 ),
                 timeout=self.timeout,

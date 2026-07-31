@@ -121,6 +121,24 @@ def _verify(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
     target = str(asset["target"])
     ipaddress.IPv4Address(target)
 
+    reachability_path = Path("/etc/hexstrike/t3-reachability.json")
+    reachability = json.loads(reachability_path.read_text(encoding="utf-8"))
+    expected_binding = hashlib.sha256(f"asset:winsrv2025-01\0{target}\0{22}".encode()).hexdigest()
+    actual_binding = hashlib.sha256(
+        f"{reachability.get('asset_id')}\0{reachability.get('target')}"
+        f"\0{reachability.get('port')}".encode()
+    ).hexdigest()
+    reachability_result = {
+        **_metadata(reachability_path),
+        "owner_pass": reachability_path.stat().st_uid == 0,
+        "group_pass": grp.getgrgid(reachability_path.stat().st_gid).gr_name == "hexstrike",
+        "mode_pass": stat.S_IMODE(reachability_path.stat().st_mode) == 0o640,
+        "exact_schema_pass": set(reachability) == {"asset_id", "target", "port"},
+        "asset_binding_pass": reachability.get("asset_id") == "asset:winsrv2025-01",
+        "target_binding_pass": actual_binding == expected_binding,
+        "fixed_port_pass": reachability.get("port") == 22,
+    }
+
     matrix_path = Path("/etc/hexstrike/job-targets.json")
     matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
     networks = matrix.get("allowed_targets", [])
@@ -243,6 +261,7 @@ def _verify(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
     }
 
     report = {
+        "ssh_reachability_configuration": reachability_result,
         "target_matrix": matrix_result,
         "credential_mapping": credential_result,
         "ssh_agent_socket": socket_result,
@@ -252,6 +271,13 @@ def _verify(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
         "uid_firewall": firewall_result,
     }
     checks = [
+        reachability_result["owner_pass"],
+        reachability_result["group_pass"],
+        reachability_result["mode_pass"],
+        reachability_result["exact_schema_pass"],
+        reachability_result["asset_binding_pass"],
+        reachability_result["target_binding_pass"],
+        reachability_result["fixed_port_pass"],
         matrix_result["owner_pass"],
         matrix_result["group_pass"],
         matrix_result["mode_pass"],

@@ -17,6 +17,7 @@ default: deny
 # just dead config; removed rather than left to bit-rot. Re-add once each has
 # a real TOOL_SPECS entry AND (for T2 ones) a hardened /api/jobs/* endpoint.
 allowed_tools:
+  - t3-ssh-reachability
   # T1 · recon (low risk, autonomous) — hardened /api/jobs/* endpoint
   - nmap
   - httpx

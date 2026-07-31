@@ -215,6 +215,10 @@ def test_explicit_assurance_profile_is_recorded_without_compliance_overclaim(tmp
     result, events = artifacts(run_dir)
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert manifest["assurance_profile"] == result["assurance_profile"] == "poc"
+    assert (
+        manifest["signed_permit_status"] == result["signed_permit_status"] == ("SKIPPED_BY_PROFILE")
+    )
+    assert manifest["signed_permit_reason"] == result["signed_permit_reason"] == ("poc_profile")
     assert manifest["assurance_config_source"] == "operator_runtime_config"
     assert result["production_ready"] is False
     assert result["aisvs_level_2_or_3_compliance_claimed"] is False

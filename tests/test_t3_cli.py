@@ -1,9 +1,10 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from core.cli import main
+from core.cli import _t3_composition, main
 from core.safety import ApprovalAuthority
 from core.t3.access import T3AccessProposal
 from core.t3.runtime import compose_t3_runtime
@@ -129,7 +130,6 @@ def test_composition_resolves_assurance_once_from_operator_config(tmp_path):
 
 def test_readiness_resolves_no_credential_and_opens_no_network(tmp_path, monkeypatch, capsys):
     files = runtime_files(tmp_path)
-    monkeypatch.setattr("core.t3.assurance.loopback_listener_ready", lambda port: True)
 
     def forbidden(*args, **kwargs):
         raise AssertionError("network or credential access attempted")
@@ -151,6 +151,17 @@ def test_readiness_resolves_no_credential_and_opens_no_network(tmp_path, monkeyp
     assert '"aisvs_level_2_or_3_compliance_claimed": false' in output
     assert "network : not contacted" in output
     assert "credential: not resolved" in output
+
+
+def test_scope_is_unsigned_and_does_not_require_approval_secret(tmp_path, monkeypatch, capsys):
+    files = runtime_files(tmp_path)
+    monkeypatch.delenv("HARNESS_APPROVAL_SECRET", raising=False)
+    assert main(["t3-scope", *common_args(tmp_path, files)]) == 0
+    output = capsys.readouterr().out
+    assert "Canonical approval request (unsigned):" in output
+    assert '"action_ids": [' in output
+    assert '"assurance_profile": "poc"' in output
+    assert not list(tmp_path.glob("*.token"))
 
 
 def test_cli_rejects_raw_commands_targets_ports_and_ssh_options(tmp_path):
@@ -313,3 +324,52 @@ def test_fixed_command_and_one_session_limits_are_structural(tmp_path):
     assert "max_sessions: int = 1" in source
     assert "self.transport.open(" in source
     assert source.count("self.transport.open(") == 1
+
+
+def test_t3b_parser_does_not_require_investigation_state(monkeypatch):
+    captured = {}
+
+    def fake(args):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr("core.cli.cmd_t3_ready", fake)
+    assert (
+        main(
+            [
+                "t3-ready",
+                "--asset-id",
+                "asset:winsrv2025-01",
+                "--profile-id",
+                "windows-host-enumeration-readonly",
+                "--runtime-config",
+                "config/local/t3-runtime.json",
+                "--prerequisite-run-dir",
+                "runs/original-t3a",
+            ]
+        )
+        == 0
+    )
+    assert captured["args"].investigation_state is None
+
+
+def test_t3b_rejects_command_selection_before_composition():
+    with pytest.raises(SystemExit, match="canonical five-action set is fixed"):
+        _t3_composition(
+            SimpleNamespace(
+                profile_id="windows-host-enumeration-readonly",
+                prerequisite_run_dir="runs/original-t3a",
+                command_id=["windows_os_version"],
+                approval_spent_dir="config/local/approval-spent",
+            )
+        )
+
+
+def test_authorized_t3a_rejects_command_selection_before_composition():
+    with pytest.raises(SystemExit, match="canonical three-action set is fixed"):
+        _t3_composition(
+            SimpleNamespace(
+                profile_id="t3-authorized-access-bounded",
+                command_id=["current_identity"],
+            )
+        )

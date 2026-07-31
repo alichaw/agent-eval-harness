@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
+from typing import Any
 
 from core.investigation.extractors import extract_nmap
 from core.investigation.models import Evidence, InvestigationState
@@ -23,6 +24,7 @@ def record_step_result(
     run_id: str = "",
     action_id: str = "",
     observed_at: datetime | None = None,
+    facts: dict[str, Any] | None = None,
 ) -> InvestigationState:
     """Return a validated copy; admission alone is never treated as success."""
     executed = set(state.executed_capabilities)
@@ -77,7 +79,7 @@ def record_step_result(
             capability_id=capability_id,
             tool_name=tool_name,
             execution_status="completed" if verified else "failed",
-            facts={"profile_id": profile_id},
+            facts={**(facts or {}), "profile_id": profile_id},
             raw_output_sha256=raw_hash,
             observed_at=when,
             complete=verified,

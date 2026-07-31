@@ -21,6 +21,7 @@ from core.t3.enumeration import (
     verify_observation,
 )
 from core.t3.hexstrike_access import issue_execution_permit
+from core.t3.poc_authorization import issue_poc_authorization_id
 
 T3B_OPERATION_ID = "windows.host.enumeration.readonly.v1"
 T3B_PERMIT_SCHEMA = "hexstrike-t3b-permit/v1"
@@ -96,7 +97,9 @@ class HexStrikeT3BExecutor:
             "result_schema": T3B_RESULT_SCHEMA,
         }
         hardened = self.assurance.profile is AssuranceProfile.HARDENED
-        authorization_id = str(claims["permit_id"])
+        authorization_id = (
+            str(claims["permit_id"]) if hardened else issue_poc_authorization_id("T3-B", now=now)
+        )
         token = issue_execution_permit(self.permit_secret, claims) if hardened else ""
         try:
             response = self.session.post(
@@ -110,11 +113,7 @@ class HexStrikeT3BExecutor:
                     if hardened
                     else {
                         "authorization_id": authorization_id,
-                        "canonical_action": {
-                            key: value
-                            for key, value in claims.items()
-                            if key not in {"schema_version", "permit_id", "nonce"}
-                        },
+                        "canonical_action": T3B_OPERATION_ID,
                     }
                 ),
                 timeout=self.timeout,

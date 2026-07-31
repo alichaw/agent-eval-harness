@@ -226,6 +226,16 @@ class Controller:
             "execution_mode": ("lab_real" if lab_executor or bounded_executor else "offline_mock"),
             "assurance_profile": self.assurance.profile.value,
             "assurance_config_source": self.assurance.trusted_source,
+            "signed_permit_status": (
+                "SKIPPED_BY_PROFILE"
+                if self.assurance.profile is AssuranceProfile.POC
+                else "REQUIRED"
+            ),
+            "signed_permit_reason": (
+                "poc_profile"
+                if self.assurance.profile is AssuranceProfile.POC
+                else "hardened_profile"
+            ),
         }
         (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
         if self._assurance_explicit:
@@ -287,6 +297,16 @@ class Controller:
                 "runtime_binding_fingerprint": t3_runtime_binding_fingerprint,
                 "assurance_profile": self.assurance.profile.value,
                 "assurance_config_source": self.assurance.trusted_source,
+                "signed_permit_status": (
+                    "SKIPPED_BY_PROFILE"
+                    if self.assurance.profile is AssuranceProfile.POC
+                    else "REQUIRED"
+                ),
+                "signed_permit_reason": (
+                    "poc_profile"
+                    if self.assurance.profile is AssuranceProfile.POC
+                    else "hardened_profile"
+                ),
                 # A run profile alone is not a production-readiness attestation.
                 "production_ready": False,
                 "aisvs_level_2_or_3_compliance_claimed": False,

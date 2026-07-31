@@ -174,5 +174,6 @@ def test_poc_uses_fixed_unsigned_authorization_endpoint_without_permit_secret():
     assert PocSession.calls[0][0].endswith("/api/v1/t3a/poc-executions")
     request = PocSession.calls[0][1]
     assert set(request) == {"authorization_id", "canonical_action"}
+    assert request["canonical_action"] == "windows.ssh.identity.v1"
     assert "permit" not in request
     assert "assurance_profile" not in request
