@@ -50,9 +50,16 @@ from core.t3.access import (
     T3_AUTHORIZED_ACCESS_PROFILE,
     BoundedLabSshExecutionPlan,
     BoundedLabSshT3Executor,
+    ParamikoBoundedSshTransport,
     T3AccessOutcome,
     T3CommandId,
     t3_access_approval_fingerprint,
+)
+from core.t3.assurance import (
+    DEFERRED_CHECKS,
+    AssuranceContext,
+    AssuranceProfile,
+    ReadinessStatus,
 )
 from core.t3.executor import (
     LAB_EXECUTION_SCOPE,
@@ -67,6 +74,7 @@ from core.t3.executor import (
     MockT3ExecutionPlan,
     MockT3Executor,
     MockT3Outcome,
+    ParamikoLabSshTransport,
     T3Executor,
     lab_target_is_locally_permitted,
     valid_pinned_host_key,
@@ -115,6 +123,7 @@ class Controller:
         job_create_token: str = "",
         approval_authority: ApprovalAuthority | None = None,
         kill_switch: KillSwitch | None = None,
+        assurance: AssuranceContext | None = None,
     ):
         self.runs_root = Path(runs_root)
         self.policy = policy
@@ -124,6 +133,8 @@ class Controller:
         self.job_create_token = job_create_token
         self.approval_authority = approval_authority
         self.kill_switch = kill_switch
+        self._assurance_explicit = assurance is not None
+        self.assurance = assurance or AssuranceContext(AssuranceProfile.HARDENED)
 
     def _resolve_profile(self, case):
         """If the case is profile-driven ({asset_id, profile_id}), resolve it into a
@@ -174,6 +185,13 @@ class Controller:
             and type(executor) is BoundedLabSshT3Executor
             else None
         )
+        from core.t3.hexstrike_access import HexStrikeT3AExecutor
+
+        hexstrike_executor_impl = (
+            executor
+            if isinstance(executor, HexStrikeT3AExecutor) and type(executor) is HexStrikeT3AExecutor
+            else None
+        )
         lab_executor_impl = (
             executor
             if isinstance(executor, LabSshT3Executor) and type(executor) is LabSshT3Executor
@@ -184,21 +202,55 @@ class Controller:
             if isinstance(executor, MockT3Executor) and type(executor) is MockT3Executor
             else None
         )
-        bounded_executor = bounded_executor_impl is not None
+        bounded_executor = bounded_executor_impl is not None or hexstrike_executor_impl is not None
         lab_executor = lab_executor_impl is not None
         mock_executor = mock_executor_impl is not None
+        forbidden_direct_transport = (
+            bounded_executor_impl is not None
+            and isinstance(bounded_executor_impl.transport, ParamikoBoundedSshTransport)
+        ) or (
+            lab_executor_impl is not None
+            and isinstance(lab_executor_impl.transport, ParamikoLabSshTransport)
+        )
         manifest = {
             "run_id": run_id,
             "created_utc": datetime.now(timezone.utc).isoformat(),
-            "agent": "bounded-lab-ssh-t3"
+            "agent": "hexstrike-t3a"
+            if hexstrike_executor_impl is not None
+            else "bounded-lab-ssh-t3"
             if bounded_executor
             else ("lab-ssh-t3" if lab_executor else "mock-t3"),
             "schema_version": SCHEMA_VERSION,
             "policy_gated": True,
             "mock_only": not (lab_executor or bounded_executor),
             "execution_mode": ("lab_real" if lab_executor or bounded_executor else "offline_mock"),
+            "assurance_profile": self.assurance.profile.value,
+            "assurance_config_source": self.assurance.trusted_source,
         }
         (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+        if self._assurance_explicit:
+            trace.emit(
+                TraceEventType.POLICY_EVENT,
+                rule="assurance_profile_resolved",
+                verdict="allow",
+                assurance_profile=self.assurance.profile.value,
+                assurance_config_source=self.assurance.trusted_source,
+                text="Trusted operator assurance profile resolved",
+            )
+            if self.assurance.profile is AssuranceProfile.POC:
+                for check, (_, reference) in DEFERRED_CHECKS.items():
+                    trace.emit(
+                        TraceEventType.POLICY_EVENT,
+                        rule=check,
+                        verdict="skip",
+                        readiness_status=ReadinessStatus.SKIPPED_BY_PROFILE.value,
+                        assurance_profile=self.assurance.profile.value,
+                        assurance_config_source=self.assurance.trusted_source,
+                        text=(
+                            "Deferred from the research PoC acceptance scope"
+                            + (f" (AISVS {reference})" if reference else "")
+                        ),
+                    )
 
         def emit(rule: str, verdict: str, text: str) -> None:
             trace.emit(
@@ -233,6 +285,14 @@ class Controller:
                 ),
                 "stage": (request.stage.value if isinstance(request, T3ActionRequest) else None),
                 "runtime_binding_fingerprint": t3_runtime_binding_fingerprint,
+                "assurance_profile": self.assurance.profile.value,
+                "assurance_config_source": self.assurance.trusted_source,
+                # A run profile alone is not a production-readiness attestation.
+                "production_ready": False,
+                "aisvs_level_2_or_3_compliance_claimed": False,
+                "assurance_deferred_controls": (
+                    list(DEFERRED_CHECKS) if self.assurance.profile is AssuranceProfile.POC else []
+                ),
                 "completed": completed,
                 "status": status,
                 "rule": rule,
@@ -267,6 +327,17 @@ class Controller:
             return finish(completed=False, status="denied", rule="t3_request_invalid")
         emit("t3_request_accepted", Verdict.ALLOW.value, "T3 request accepted for evaluation")
 
+        if forbidden_direct_transport:
+            emit(
+                "t3_hexstrike_executor_required",
+                Verdict.DENY.value,
+                "Direct T3 transport rejected",
+            )
+            return finish(
+                completed=False,
+                status="denied",
+                rule="t3_hexstrike_executor_required",
+            )
         if not (mock_executor or lab_executor or bounded_executor):
             emit("t3_executor_required", Verdict.DENY.value, "T3 executor rejected")
             return finish(completed=False, status="denied", rule="t3_executor_required")
@@ -295,9 +366,12 @@ class Controller:
         lab_observation = None
         bounded_commands: tuple[T3CommandId, ...] = ()
         if lab_executor or bounded_executor:
+            selected_bounded_executor = bounded_executor_impl or hexstrike_executor_impl
             enabled = (
                 bounded_executor_impl.enabled
                 if bounded_executor_impl is not None
+                else hexstrike_executor_impl.enabled
+                if hexstrike_executor_impl is not None
                 else lab_executor_impl.enabled
                 if lab_executor_impl is not None
                 else False
@@ -318,7 +392,7 @@ class Controller:
                 Verdict.ALLOW.value,
                 "Lab execution explicitly enabled",
             )
-            if bounded_executor_impl is not None:
+            if selected_bounded_executor is not None:
                 try:
                     bounded_commands = tuple(T3CommandId(value) for value in request.command_scope)
                 except ValueError:
@@ -371,8 +445,8 @@ class Controller:
                 and valid_pinned_host_key(source.get("ssh_host_key"))
                 and source_target
                 == (
-                    bounded_executor_impl.permitted_target
-                    if bounded_executor_impl is not None
+                    selected_bounded_executor.permitted_target
+                    if selected_bounded_executor is not None
                     else lab_executor_impl.permitted_target
                     if lab_executor_impl is not None
                     else ""
@@ -515,16 +589,17 @@ class Controller:
         )
 
         # F/G/H. The Controller computes and requires the exact action binding.
-        if bounded_executor_impl is not None:
+        selected_bounded_executor = bounded_executor_impl or hexstrike_executor_impl
+        if selected_bounded_executor is not None:
             action_fingerprint = (
-                bounded_executor_impl.approval_fingerprint
+                selected_bounded_executor.approval_fingerprint
                 or t3_access_approval_fingerprint(request)
             )
         else:
             action_fingerprint = t3_action_fingerprint(request)
         t3_runtime_binding_fingerprint = (
-            bounded_executor_impl.runtime_binding_fingerprint
-            if bounded_executor_impl is not None
+            selected_bounded_executor.runtime_binding_fingerprint
+            if selected_bounded_executor is not None
             else action_fingerprint
         )
         if not action_fingerprint:
@@ -534,7 +609,7 @@ class Controller:
         if not token or self.approval_authority is None:
             emit("t3_approval_required", Verdict.DENY.value, "T3 approval required")
             return finish(completed=False, status="denied", rule="t3_approval_required")
-        if bounded_executor_impl is not None:
+        if selected_bounded_executor is not None:
             emit(
                 "t3_approval_required",
                 Verdict.REQUIRE_APPROVAL.value,
@@ -553,7 +628,7 @@ class Controller:
             emit("t3_approval_invalid", Verdict.DENY.value, "T3 approval rejected")
             return finish(completed=False, status="denied", rule="t3_approval_invalid")
         emit("t3_approval_verified", Verdict.ALLOW.value, "T3 approval consumed")
-        if bounded_executor_impl is not None:
+        if selected_bounded_executor is not None:
             trace.emit(
                 TraceEventType.EXECUTION_STATE,
                 state=ExecutionState.APPROVED.value,
@@ -563,7 +638,7 @@ class Controller:
             )
 
         # I/J/K. Only a narrow immutable plan crosses the selected executor boundary.
-        if bounded_executor_impl is not None:
+        if selected_bounded_executor is not None:
             trace.emit(
                 TraceEventType.EXECUTION_STATE,
                 rule="t3_session_execution_started",
@@ -581,7 +656,7 @@ class Controller:
                 command_ids=bounded_commands,
             )
             try:
-                access_outcome = bounded_executor_impl.run(bounded_plan)
+                access_outcome = selected_bounded_executor.run(bounded_plan)
                 if not isinstance(access_outcome, T3AccessOutcome):
                     raise TypeError("invalid bounded T3 outcome")
             except Exception:  # noqa: BLE001
@@ -601,6 +676,16 @@ class Controller:
                     if code.endswith(("_failed", "_denied"))
                     else Verdict.ALLOW.value,
                     "Bounded T3-A stage recorded",
+                )
+            if access_outcome.execution_permit_id:
+                trace.emit(
+                    TraceEventType.EXECUTION_STATE,
+                    rule="hexstrike_execution_permit_consumed",
+                    state=ExecutionState.RUNNING.value,
+                    execution_permit_id=access_outcome.execution_permit_id,
+                    execution_permit_digest=access_outcome.execution_permit_digest,
+                    runtime_binding_fingerprint=t3_runtime_binding_fingerprint,
+                    text="HexStrike execution permit consumed",
                 )
             for command_result in access_outcome.command_results:
                 command_action_id = f"t3a:{command_result.command_id}"

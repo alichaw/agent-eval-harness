@@ -115,6 +115,7 @@ t3_allowed_stages: [authorized_access]
         "username": "authorized-observer",
         "private_key_path": str(tmp_path / "not-read-during-readiness"),
         "pinned_host_key": PINNED_HOST_KEY,
+        "assurance": {"profile": "poc"},
     }
     config.update(config_updates or {})
     config_path = tmp_path / "runtime.json"
@@ -244,6 +245,7 @@ def test_profile_selection_is_explicit_and_commands_remain_allowlisted():
 def test_offline_readiness_never_resolves_credentials_or_opens_transport(
     tmp_path, monkeypatch, capsys
 ):
+    monkeypatch.setattr("core.t3.assurance.loopback_listener_ready", lambda port: True)
     files = runtime_files(tmp_path)
 
     def forbidden(*args, **kwargs):

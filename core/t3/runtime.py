@@ -7,6 +7,7 @@ import json
 import stat
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -18,13 +19,16 @@ from core.t3.access import (
     SESSION_POLICY,
     T3_ACCESS_PROFILE,
     T3_AUTHORIZED_ACCESS_PROFILE,
-    BoundedLabSshT3Executor,
-    ParamikoBoundedSshTransport,
     T3AccessProposal,
+    T3AuthorizedAccessProposal,
     T3CommandId,
     materialize_t3_access_request,
     t3_access_approval_fingerprint,
 )
+from core.t3.access import (
+    ParamikoBoundedSshTransport as ParamikoBoundedSshTransport,  # noqa: F401
+)
+from core.t3.assurance import AssuranceConfig, AssuranceContext
 from core.t3.binding import RuntimeBinding, canonical_digest, host_key_identity
 from core.t3.executor import (
     LabSshCredential,
@@ -40,7 +44,7 @@ T3_ENABLEMENT_ENV = "T3_LAB_EXECUTION_ENABLED"
 class T3RuntimeConfig(BaseModel):
     """Operator-owned values; this model is never exposed as agent input."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     asset_id: str = Field(min_length=1, max_length=128)
     profile_id: str = Field(
@@ -53,6 +57,8 @@ class T3RuntimeConfig(BaseModel):
     username: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$")
     private_key_path: str = Field(min_length=1)
     pinned_host_key: str = Field(min_length=1)
+    assurance: AssuranceConfig = Field(default_factory=AssuranceConfig)
+    hexstrike_url: Literal["http://127.0.0.1:8888"] = "http://127.0.0.1:8888"
 
 
 class OperatorFileLabSshCredentialResolver(LabSshCredentialResolver):
@@ -86,6 +92,7 @@ class T3RuntimeComposition:
     config: T3RuntimeConfig
     fingerprint: str
     runtime_binding_fingerprint: str
+    assurance: AssuranceContext
 
 
 def _read_private_config(path: str | Path) -> T3RuntimeConfig:
@@ -114,13 +121,15 @@ def _action_id(proposal: T3AccessProposal, state: InvestigationState) -> str:
 
 def compose_t3_runtime(
     *,
-    proposal: T3AccessProposal,
+    proposal: T3AccessProposal | T3AuthorizedAccessProposal,
     runtime_config_path: str | Path,
     assets_path: str | Path,
     profiles_path: str | Path,
     policy_path: str | Path,
     investigation_state_path: str | Path,
 ) -> T3RuntimeComposition:
+    if isinstance(proposal, T3AuthorizedAccessProposal):
+        proposal = proposal.as_trusted_access_proposal()
     config = _read_private_config(runtime_config_path)
     if config.asset_id != proposal.asset_id or config.profile_id != proposal.profile_id:
         raise ValueError("operator configuration does not match proposal")
@@ -206,7 +215,7 @@ def compose_t3_runtime(
         principal=config.username,
         host_key_algorithm=host_key_algorithm,
         host_key_fingerprint=host_key_fingerprint,
-        transport_type="ssh_paramiko",
+        transport_type="hexstrike_t3a_v1",
         runtime_config_digest=canonical_digest(config.model_dump(mode="json")),
         asset_registry_digest=canonical_digest(source),
         policy_digest=canonical_digest(asdict(policy)),
@@ -226,6 +235,7 @@ def compose_t3_runtime(
             enforcement_binding=enforcement_binding,
         ),
         runtime_binding_fingerprint=runtime_binding.fingerprint,
+        assurance=AssuranceContext(config.assurance.profile),
     )
 
 
@@ -238,18 +248,22 @@ def build_t3_controller_and_executor(
     enablement: str | None,
 ):
     """Construct the only live route; callers cannot substitute an executor."""
-    from core.controller import Controller
+    import os
 
-    resolver = OperatorFileLabSshCredentialResolver(composition.config)
+    from core.controller import Controller
+    from core.t3.hexstrike_access import HexStrikeT3AExecutor
+
     kill_switch = KillSwitch(Path(kill_switch_path))
-    executor = BoundedLabSshT3Executor(
-        resolver,
-        ParamikoBoundedSshTransport(),
+    permit_secret = os.environ.get("HARNESS_EXECUTION_PERMIT_SECRET", "")
+    executor = HexStrikeT3AExecutor(
+        base_url=composition.config.hexstrike_url,
+        permit_secret=permit_secret.encode(),
         enablement=enablement,
         permitted_target=composition.assets.resolve(composition.request.source_asset_id)["target"],
         kill_switch=kill_switch,
         approval_fingerprint=composition.fingerprint,
         runtime_binding_fingerprint=composition.runtime_binding_fingerprint,
+        assurance=composition.assurance,
     )
     controller = Controller(
         runs_root=runs_root,
@@ -257,5 +271,6 @@ def build_t3_controller_and_executor(
         assets=composition.assets,
         approval_authority=approval_authority,
         kill_switch=kill_switch,
+        assurance=composition.assurance,
     )
     return controller, executor

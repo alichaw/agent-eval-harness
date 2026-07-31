@@ -9,6 +9,7 @@ from core.policy import Policy
 from core.profiles import AssetRegistry
 from core.safety import ApprovalAuthority, ApprovalError
 from core.schemas.models import TraceEvent
+from core.t3.assurance import DEFERRED_CHECKS, AssuranceContext, AssuranceProfile
 from core.t3.executor import MockT3Executor
 from core.t3.models import T3ActionRequest, T3Stage, t3_action_fingerprint
 
@@ -194,6 +195,41 @@ def test_initial_access_completes_end_to_end_mock_flow(tmp_path):
     )
     assert artifacts(reuse_dir)[0]["rule"] == "t3_approval_invalid"
     assert executor.invocation_count == 1
+
+
+def test_explicit_assurance_profile_is_recorded_without_compliance_overclaim(tmp_path):
+    request = initial_request()
+    approval_authority = authority(tmp_path)
+    token = approval(approval_authority, request)
+    poc_controller = controller(
+        tmp_path,
+        approval_authority,
+        assurance=AssuranceContext(AssuranceProfile.POC),
+    )
+    run_dir = poc_controller.run_t3_action(
+        request,
+        initial_state(),
+        MockT3Executor(),
+        token,
+    )
+    result, events = artifacts(run_dir)
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["assurance_profile"] == result["assurance_profile"] == "poc"
+    assert manifest["assurance_config_source"] == "operator_runtime_config"
+    assert result["production_ready"] is False
+    assert result["aisvs_level_2_or_3_compliance_claimed"] is False
+    assurance_event = next(event for event in events if event.rule == "assurance_profile_resolved")
+    assert assurance_event.assurance_profile == "poc"
+    assert assurance_event.assurance_config_source == "operator_runtime_config"
+    skipped = [event for event in events if event.readiness_status == "SKIPPED_BY_PROFILE"]
+    assert {event.rule for event in skipped} == set(DEFERRED_CHECKS)
+    replay = poc_controller.run_t3_action(
+        request,
+        initial_state(),
+        MockT3Executor(),
+        token,
+    )
+    assert artifacts(replay)[0]["rule"] == "t3_approval_invalid"
 
 
 def test_lateral_movement_completes_and_redacts_sensitive_inputs(tmp_path):

@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 from core.controller import Controller
+from core.t3.binding import canonical_digest
 
 
 def _approval_authority(spent_dir: str | Path):
@@ -214,15 +215,22 @@ def cmd_replay(args) -> int:
 
 def _t3_proposal(args):
     if args.profile_id == "windows-host-enumeration-readonly":
-        from core.t3.enumeration import T3BProposal
+        from core.t3.enumeration import T3BAgentProposal
 
-        return T3BProposal(
+        return T3BAgentProposal(
             asset_id=args.asset_id,
             profile_id=args.profile_id,
-            objective=args.objective,
-            command_ids=args.command_id,
         )
-    from core.t3.access import T3AccessProposal
+    from core.t3.access import (
+        T3AccessProposal,
+        T3AuthorizedAccessProposal,
+    )
+
+    if args.profile_id == "t3-authorized-access-bounded":
+        return T3AuthorizedAccessProposal(
+            asset_id=args.asset_id,
+            profile_id=args.profile_id,
+        )
 
     return T3AccessProposal(
         asset_id=args.asset_id,
@@ -273,7 +281,108 @@ def _t3_composition(args):
 
 def cmd_t3_ready(args) -> int:
     """Validate all pre-approval controls without resolving credentials or connecting."""
+    import os
+    import stat
+    from dataclasses import asdict
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+    from urllib.parse import urlparse
+
+    from core.t3.assurance import (
+        COMMON_CHECKS,
+        DEFERRED_CHECKS,
+        evaluate_readiness,
+        loopback_listener_ready,
+    )
+
     composition = _t3_composition(args)
+    endpoint = urlparse(composition.config.hexstrike_url)
+    common = dict.fromkeys(COMMON_CHECKS, True)
+    common["hexstrike_loopback_endpoint"] = (
+        endpoint.scheme == "http"
+        and endpoint.hostname == "127.0.0.1"
+        and endpoint.port == 8888
+        and not endpoint.username
+        and not endpoint.password
+        and endpoint.path in {"", "/"}
+        and not endpoint.query
+        and not endpoint.fragment
+        and loopback_listener_ready(8888)
+    )
+    secret = os.environ.get("HARNESS_EXECUTION_PERMIT_SECRET", "")
+    secret_file = Path("/etc/agent-eval-harness/t3-permit.env")
+    unit_file = Path("/etc/systemd/system/hexstrike-t3.service")
+    hardened_attestation_file = Path("/etc/agent-eval-harness/hardened-readiness.json")
+    try:
+        secret_isolated = (
+            secret_file.stat().st_uid == 0 and stat.S_IMODE(secret_file.stat().st_mode) == 0o600
+        )
+    except OSError:
+        secret_isolated = False
+    try:
+        unit = unit_file.read_text(encoding="utf-8")
+    except OSError:
+        unit = ""
+    try:
+        attestation_info = hardened_attestation_file.stat()
+        attestation = json.loads(hardened_attestation_file.read_text(encoding="utf-8"))
+        verified_at = datetime.fromisoformat(attestation["verified_at"])
+        uid_enforcement_verified = (
+            attestation_info.st_uid == 0
+            and stat.S_IMODE(attestation_info.st_mode) == 0o600
+            and set(attestation) == {"uid_network_enforcement", "verified_at"}
+            and attestation["uid_network_enforcement"] is True
+            and verified_at.tzinfo is not None
+            and verified_at.utcoffset() is not None
+            and datetime.now(timezone.utc) - timedelta(minutes=15)
+            <= verified_at
+            <= datetime.now(timezone.utc) + timedelta(seconds=30)
+        )
+    except (KeyError, OSError, TypeError, ValueError):
+        uid_enforcement_verified = False
+    hardened = dict.fromkeys(DEFERRED_CHECKS, False)
+    hardened.update(
+        {
+            "signed_execution_permit": len(secret.encode()) >= 32,
+            "approval_signing_key_isolation": secret_isolated,
+            "downstream_delegation_token": len(secret.encode()) >= 32,
+            "dedicated_executor_identity": "User=hexstrike" in unit,
+            "hardened_systemd_deployment": (
+                "NoNewPrivileges=true" in unit and "ProtectSystem=strict" in unit
+            ),
+            # This exact root-owned attestation is written only after the
+            # privileged verifier has inspected the live kernel rule set.
+            "uid_network_enforcement": uid_enforcement_verified,
+        }
+    )
+    report = evaluate_readiness(
+        composition.assurance,
+        common=common,
+        hardened=hardened,
+    )
+    print(
+        json.dumps(
+            {
+                "assurance_profile": report.profile.value,
+                "assurance_config_source": report.trusted_source,
+                "ready": report.ready,
+                "ready_with_profile_skips": report.ready_with_profile_skips,
+                "production_ready": (report.ready and report.profile.value == "hardened"),
+                "aisvs_level_2_or_3_compliance_claimed": False,
+                "checks": [
+                    {
+                        **asdict(item),
+                        "status": item.status.value,
+                        "profile": item.profile.value,
+                    }
+                    for item in report.checks
+                ],
+            },
+            indent=2,
+        )
+    )
+    if not report.ready:
+        return 1
     if args.profile_id == "windows-host-enumeration-readonly":
         print("T3-B readiness: ready")
         print(f"stage   : {composition.bindings.stage_id}")
@@ -299,6 +408,37 @@ def cmd_t3_ready(args) -> int:
 def cmd_t3_approve(args) -> int:
     """Issue the exact action/session-bound T3-A approval."""
     composition = _t3_composition(args)
+    if args.profile_id == "windows-host-enumeration-readonly":
+        approval_summary = {
+            "asset_id": composition.plan.asset_id,
+            "resolved_target_identity": composition.bindings.resolved_target_identity,
+            "profile_id": composition.bindings.profile_id,
+            "stage": composition.bindings.stage_id,
+            "action_ids": list(composition.bindings.command_ids),
+            "justification": composition.bindings.justification,
+            "runtime_binding_fingerprint": (composition.bindings.runtime_binding_fingerprint),
+            "assurance_profile": composition.assurance.profile.value,
+        }
+    else:
+        approval_summary = {
+            "asset_id": composition.request.source_asset_id,
+            "resolved_target_identity": canonical_digest(
+                {
+                    "asset_id": composition.request.source_asset_id,
+                    "target": composition.assets.resolve(composition.request.source_asset_id)[
+                        "target"
+                    ],
+                }
+            ),
+            "profile_id": composition.request.capability_id,
+            "stage": composition.request.stage.value,
+            "action_ids": list(composition.request.command_scope),
+            "justification": composition.request.written_justification,
+            "runtime_binding_fingerprint": (composition.runtime_binding_fingerprint),
+            "assurance_profile": composition.assurance.profile.value,
+        }
+    print("Canonical approval request:")
+    print(json.dumps(approval_summary, indent=2, sort_keys=True))
     authority = _approval_authority(args.approval_spent_dir)
     if authority is None:
         raise SystemExit("HARNESS_APPROVAL_SECRET is required")
@@ -351,7 +491,6 @@ def cmd_t3_run(args) -> int:
     token = _read_token_file(args.approval_token_file)
     if args.profile_id == "windows-host-enumeration-readonly":
         from core.safety import KillSwitch
-        from core.t3.enumeration import ParamikoT3BTransport
         from core.t3.enumeration_runtime import execute_t3b_composition
         from core.t3.runtime import T3_ENABLEMENT_ENV
 
@@ -361,7 +500,6 @@ def cmd_t3_run(args) -> int:
             composition,
             authority=authority,
             token=token,
-            transport=ParamikoT3BTransport(),
             runs_root=args.runs_root,
             kill_switch=KillSwitch(Path(args.kill_switch_file)),
         )
@@ -401,10 +539,9 @@ def _add_t3_proposal_arguments(parser) -> None:
             "windows-host-enumeration-readonly",
         ],
     )
-    parser.add_argument("--objective", required=True)
+    parser.add_argument("--objective")
     parser.add_argument(
         "--command-id",
-        required=True,
         action="append",
         choices=[
             "current_identity",

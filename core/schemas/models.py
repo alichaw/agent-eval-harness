@@ -145,6 +145,9 @@ class TraceEvent(BaseModel):
     execution_mode: str | None = None
     action_definition_digest: str | None = None
     runtime_binding_fingerprint: str | None = None
+    assurance_profile: str | None = None
+    assurance_config_source: str | None = None
+    readiness_status: str | None = None
 
 
 # ---------------------------------------------------------------------------

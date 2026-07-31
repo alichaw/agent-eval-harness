@@ -141,6 +141,27 @@ class T3AccessProposal(BaseModel):
         return value
 
 
+class T3AuthorizedAccessProposal(BaseModel):
+    """Agent-visible authorized-access proposal; execution scope is registry-owned."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    asset_id: str = Field(min_length=1, max_length=128)
+    profile_id: str = Field(pattern=r"^t3-authorized-access-bounded$")
+
+    def as_trusted_access_proposal(self) -> T3AccessProposal:
+        return T3AccessProposal(
+            asset_id=self.asset_id,
+            profile_id=self.profile_id,
+            objective="Verify bounded authorized identity and privilege status",
+            command_ids=[
+                T3CommandId.CURRENT_IDENTITY,
+                T3CommandId.HOST_IDENTITY,
+                T3CommandId.PRIVILEGE_CONTEXT,
+            ],
+        )
+
+
 def materialize_t3_access_request(
     proposal: T3AccessProposal,
     *,
@@ -245,6 +266,8 @@ class T3AccessOutcome:
     mock_only: bool = False
     real_action_performed: bool = True
     arbitrary_command_exposed: bool = False
+    execution_permit_id: str = ""
+    execution_permit_digest: str = ""
 
     def result_document(self) -> dict[str, Any]:
         value = asdict(self)

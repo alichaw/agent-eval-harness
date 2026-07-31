@@ -47,6 +47,7 @@ t3_allowed_stages: [initial_access]
                 "username": "synthetic-operator",
                 "private_key_path": str(tmp_path / "operator-key"),
                 "pinned_host_key": PINNED_HOST_KEY,
+                "assurance": {"profile": "poc"},
             }
         )
     )
@@ -87,6 +88,18 @@ def approve(tmp_path, files, monkeypatch):
     return token_file
 
 
+def test_approval_presents_canonical_action_without_secret(tmp_path, monkeypatch, capsys):
+    files = runtime_files(tmp_path)
+    token_file = approve(tmp_path, files, monkeypatch)
+    output = capsys.readouterr().out
+    assert "Canonical approval request:" in output
+    assert '"asset_id": "asset-source"' in output
+    assert '"action_ids": [' in output
+    assert '"assurance_profile": "poc"' in output
+    assert "resolved_target_identity" in output
+    assert token_file.read_text().strip() not in output
+
+
 def composition(tmp_path, files):
     assets, policy, state, config = files
     return compose_t3_runtime(
@@ -104,8 +117,19 @@ def composition(tmp_path, files):
     )
 
 
+def test_composition_resolves_assurance_once_from_operator_config(tmp_path):
+    selected_files = runtime_files(tmp_path)
+    selected = composition(tmp_path, selected_files)
+    value = json.loads(selected_files[-1].read_text())
+    value["assurance"]["profile"] = "hardened"
+    selected_files[-1].write_text(json.dumps(value))
+    selected_files[-1].chmod(0o600)
+    assert selected.assurance.profile.value == "poc"
+
+
 def test_readiness_resolves_no_credential_and_opens_no_network(tmp_path, monkeypatch, capsys):
     files = runtime_files(tmp_path)
+    monkeypatch.setattr("core.t3.assurance.loopback_listener_ready", lambda port: True)
 
     def forbidden(*args, **kwargs):
         raise AssertionError("network or credential access attempted")
@@ -121,6 +145,10 @@ def test_readiness_resolves_no_credential_and_opens_no_network(tmp_path, monkeyp
 
     assert main(["t3-ready", *common_args(tmp_path, files)]) == 0
     output = capsys.readouterr().out
+    assert '"assurance_profile": "poc"' in output
+    assert '"status": "SKIPPED_BY_PROFILE"' in output
+    assert '"production_ready": false' in output
+    assert '"aisvs_level_2_or_3_compliance_claimed": false' in output
     assert "network : not contacted" in output
     assert "credential: not resolved" in output
 
@@ -133,6 +161,7 @@ def test_cli_rejects_raw_commands_targets_ports_and_ssh_options(tmp_path):
         ["--port", "22"],
         ["--ssh-option", "anything"],
         ["--password", "not-a-secret"],
+        ["--assurance-profile", "poc"],
     ):
         with pytest.raises(SystemExit):
             main(["t3-ready", *common_args(tmp_path, files), *forbidden])

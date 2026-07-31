@@ -15,6 +15,11 @@ from core.t3.access import (
     materialize_t3_access_request,
     t3_access_approval_fingerprint,
 )
+from core.t3.assurance import (
+    AssuranceContext,
+    AssuranceProfile,
+    ReadinessStatus,
+)
 from core.t3.executor import (
     LabObservation,
     LabSshExecutionPlan,
@@ -31,6 +36,8 @@ from core.t3.models import T3ActionRequest, T3Stage, t3_action_fingerprint
 
 __all__ = [
     "LabObservation",
+    "AssuranceContext",
+    "AssuranceProfile",
     "BoundedLabSshExecutionPlan",
     "BoundedLabSshT3Executor",
     "BoundedSshSession",
@@ -57,4 +64,5 @@ __all__ = [
     "validate_t3_prerequisites",
     "ParamikoLabSshTransport",
     "ParamikoBoundedSshTransport",
+    "ReadinessStatus",
 ]

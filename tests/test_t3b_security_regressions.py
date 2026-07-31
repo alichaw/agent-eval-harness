@@ -593,7 +593,7 @@ def test_direct_executor_rejects_substituted_plan_before_resolver_or_transport()
     assert not outcome.action_evidence
 
 
-@pytest.mark.parametrize("enablement", [None, "", "false", "TRUE", "1"])
+@pytest.mark.parametrize("enablement", [None, "", "false", "TRUE", "1", "true"])
 def test_direct_real_executor_denied_before_resolver_or_transport(monkeypatch, enablement):
     monkeypatch.delenv("T3_LAB_EXECUTION_ENABLED", raising=False)
     resolver, transport = FakeResolver(), NetworkTransport()

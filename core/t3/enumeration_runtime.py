@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -11,6 +11,7 @@ from core.policy import Policy, T3PolicyRequest, Verdict
 from core.profiles import AssetRegistry, ProfileCatalog
 from core.safety import ApprovalAuthority, KillSwitch, profile_fingerprint
 from core.t3.access import SESSION_POLICY, T3CommandId
+from core.t3.assurance import AssuranceContext, AssuranceProfile
 from core.t3.binding import RuntimeBinding, canonical_digest, host_key_identity
 from core.t3.enumeration import (
     T3B_PLATFORM,
@@ -19,7 +20,9 @@ from core.t3.enumeration import (
     WINDOWS_ACTION_REGISTRY,
     ExecutionMode,
     T3APrerequisite,
+    T3BAgentProposal,
     T3BBindings,
+    T3BExecutionBoundary,
     T3BExecutionPlan,
     T3BExecutor,
     T3BProposal,
@@ -44,6 +47,9 @@ class T3BComposition:
     plan: T3BExecutionPlan
     assets: AssetRegistry
     config: T3RuntimeConfig
+    assurance: AssuranceContext = field(
+        default_factory=lambda: AssuranceContext(AssuranceProfile.HARDENED)
+    )
 
 
 def validate_prerequisite_freshness(
@@ -79,7 +85,7 @@ def validate_prerequisite_freshness(
 
 def compose_t3b_runtime(
     *,
-    proposal: T3BProposal,
+    proposal: T3BProposal | T3BAgentProposal,
     runtime_config_path: str | Path,
     assets_path: str | Path,
     profiles_path: str | Path,
@@ -90,6 +96,8 @@ def compose_t3b_runtime(
     now: datetime | None = None,
 ) -> T3BComposition:
     """Validate readiness without resolving a credential or opening a transport."""
+    if isinstance(proposal, T3BAgentProposal):
+        proposal = proposal.as_trusted_proposal()
     proposal_time = now or datetime.now(timezone.utc)
     if proposal_time.tzinfo is None or proposal_time.utcoffset() is None:
         raise ValueError("timezone-aware proposal time required")
@@ -155,7 +163,7 @@ def compose_t3b_runtime(
         principal=config.username,
         host_key_algorithm=algorithm,
         host_key_fingerprint=host_key_fingerprint,
-        transport_type="ssh_paramiko",
+        transport_type="hexstrike_t3b_v1",
         runtime_config_digest=canonical_digest(prerequisite_config.model_dump(mode="json")),
         asset_registry_digest=canonical_digest(asset),
         policy_digest=canonical_digest(asdict(policy)),
@@ -194,6 +202,7 @@ def compose_t3b_runtime(
         plan,
         assets.with_asset_overrides(proposal.asset_id, asset),
         config,
+        AssuranceContext(config.assurance.profile),
     )
 
 
@@ -202,13 +211,38 @@ def execute_t3b_composition(
     *,
     authority: ApprovalAuthority,
     token: str,
-    transport: T3BTransport,
+    transport: T3BTransport | None = None,
     runs_root: str | Path,
     kill_switch: KillSwitch,
     resolver: LabSshCredentialResolver | None = None,
     enablement: str | None = None,
 ) -> Path:
     """The transport is explicit so tests remain fake-backed."""
+    executor: T3BExecutionBoundary
+    if transport is None:
+        import os
+
+        from core.t3.hexstrike_enumeration import HexStrikeT3BExecutor
+
+        permit_secret = os.environ.get("HARNESS_EXECUTION_PERMIT_SECRET", "")
+        executor = HexStrikeT3BExecutor(
+            base_url=composition.config.hexstrike_url,
+            permit_secret=permit_secret.encode(),
+            enablement=enablement,
+            kill_switch=kill_switch,
+            assurance=composition.assurance,
+        )
+        return run_t3b(
+            plan=composition.plan,
+            prerequisite=composition.prerequisite,
+            executor=executor,
+            authority=authority,
+            approval_token=token,
+            runs_root=runs_root,
+            assurance=composition.assurance,
+        )
+    if getattr(transport, "transport_type", "") == "ssh_paramiko" and enablement == "true":
+        raise ValueError("HexStrike T3-B executor required")
     selected_resolver = resolver or OperatorFileLabSshCredentialResolver(composition.config)
     mode = getattr(transport, "execution_mode", None)
     executor = T3BExecutor(
@@ -226,4 +260,5 @@ def execute_t3b_composition(
         authority=authority,
         approval_token=token,
         runs_root=runs_root,
+        assurance=composition.assurance,
     )

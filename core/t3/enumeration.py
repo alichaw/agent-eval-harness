@@ -9,7 +9,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -17,7 +16,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -26,6 +25,12 @@ from core.redaction import Redactor
 from core.replay import validate_run_artifacts
 from core.safety import ApprovalAuthority, KillSwitch
 from core.schemas.models import SCHEMA_VERSION, ToolMode, TraceEventType
+from core.t3.assurance import (
+    DEFERRED_CHECKS,
+    AssuranceContext,
+    AssuranceProfile,
+    ReadinessStatus,
+)
 from core.t3.binding import RuntimeBinding, canonical_digest, host_key_identity
 from core.t3.executor import (
     LabSshConnection,
@@ -47,7 +52,6 @@ T3B_TOTAL_TIMEOUT_SECONDS = 60
 T3B_STDOUT_LIMIT = 16_384
 T3B_STDERR_LIMIT = 4_096
 T3B_TOTAL_OUTPUT_LIMIT = 50_000
-T3B_ENABLEMENT_ENV = "T3_LAB_EXECUTION_ENABLED"
 
 
 class ExecutionMode(str, Enum):
@@ -179,6 +183,23 @@ class T3BProposal(BaseModel):
         if len(value) != len(set(value)):
             raise ValueError("command IDs must be unique")
         return value
+
+
+class T3BAgentProposal(BaseModel):
+    """Agent-visible T3-B request; objective and action order are registry-owned."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    asset_id: str = Field(min_length=1, max_length=128)
+    profile_id: str = Field(pattern=r"^windows-host-enumeration-readonly$")
+
+    def as_trusted_proposal(self) -> T3BProposal:
+        return T3BProposal(
+            asset_id=self.asset_id,
+            profile_id=self.profile_id,
+            objective="Perform fixed read-only Windows host enumeration",
+            command_ids=list(WINDOWS_ACTION_REGISTRY),
+        )
 
 
 @dataclass(frozen=True)
@@ -433,6 +454,8 @@ class T3BOutcome:
     residual_session_uncertainty: bool
     action_evidence: tuple[T3BActionEvidence, ...]
     trace_codes: tuple[str, ...]
+    execution_permit_id: str = ""
+    execution_permit_digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -456,7 +479,7 @@ class T3BSession(ABC):
 
 
 class T3BTransport(ABC):
-    execution_mode: ExecutionMode
+    execution_mode: ExecutionMode | None
     network_capable: bool
     transport_type: str
 
@@ -660,12 +683,10 @@ class T3BExecutor:
             codes.append(binding_error)
             return self._outcome(records, codes, False, True, False, False)
         if self.execution_mode is ExecutionMode.LAB_REAL:
-            enabled = self.enablement
-            if enabled is None:
-                enabled = os.environ.get(T3B_ENABLEMENT_ENV)
-            if enabled != "true" or network_capable is not True:
-                codes.append("execution_boundary_denied")
-                return self._outcome(records, codes, False, True, False, False)
+            # This local executor is an offline test seam only. All production
+            # T3-B execution is permit-gated through HexStrike.
+            codes.append("execution_boundary_denied")
+            return self._outcome(records, codes, False, True, False, False)
         elif self.execution_mode is ExecutionMode.OFFLINE_MOCK:
             if network_capable is not False:
                 codes.append("execution_mode_invalid")
@@ -878,15 +899,28 @@ class T3BExecutor:
         )
 
 
+class T3BExecutionBoundary(Protocol):
+    """Minimal executor contract accepted by the sealed T3-B run path."""
+
+    @property
+    def execution_mode(self) -> ExecutionMode | None: ...
+
+    @property
+    def transport(self) -> Any: ...
+
+    def run(self, plan: T3BExecutionPlan) -> T3BOutcome: ...
+
+
 def run_t3b(
     *,
     plan: T3BExecutionPlan,
     prerequisite: T3APrerequisite,
-    executor: T3BExecutor,
+    executor: T3BExecutionBoundary,
     authority: ApprovalAuthority,
     approval_token: str,
     runs_root: str | Path,
     redactor: Redactor | None = None,
+    assurance: AssuranceContext | None = None,
 ) -> Path:
     """Consume a T3-B-only approval, run once, and persist bounded evidence."""
     run_id = f"{datetime.now(timezone.utc):%Y%m%d-%H%M%S}-t3b-{time.time_ns()}"
@@ -894,6 +928,7 @@ def run_t3b(
     root.mkdir(parents=True)
     trace = TraceWriter(run_id, root / "trace.jsonl", redactor=redactor)
     execution_mode = executor.execution_mode
+    assurance = assurance or AssuranceContext(AssuranceProfile.HARDENED)
     if not isinstance(execution_mode, ExecutionMode):
         raise ValueError("validated T3-B execution mode required")
     (root / "manifest.json").write_text(
@@ -905,6 +940,8 @@ def run_t3b(
                 "stage": T3B_STAGE,
                 "execution_mode": execution_mode.value,
                 "mock_only": execution_mode is ExecutionMode.OFFLINE_MOCK,
+                "assurance_profile": assurance.profile.value,
+                "assurance_config_source": assurance.trusted_source,
             },
             indent=2,
         )
@@ -921,6 +958,28 @@ def run_t3b(
         )
 
     emit("t3b_proposal_validated", "allow")
+    trace.emit(
+        TraceEventType.POLICY_EVENT,
+        rule="assurance_profile_resolved",
+        verdict="allow",
+        assurance_profile=assurance.profile.value,
+        assurance_config_source=assurance.trusted_source,
+        text="Trusted operator assurance profile resolved",
+    )
+    if assurance.profile is AssuranceProfile.POC:
+        for check, (_, reference) in DEFERRED_CHECKS.items():
+            trace.emit(
+                TraceEventType.POLICY_EVENT,
+                rule=check,
+                verdict="skip",
+                readiness_status=ReadinessStatus.SKIPPED_BY_PROFILE.value,
+                assurance_profile=assurance.profile.value,
+                assurance_config_source=assurance.trusted_source,
+                text=(
+                    "Deferred from the research PoC acceptance scope"
+                    + (f" (AISVS {reference})" if reference else "")
+                ),
+            )
     emit("t3a_prerequisite_validated", "allow")
     emit("t3b_policy_requires_approval", "require_approval")
     binding_error = validate_execution_plan(
@@ -960,6 +1019,16 @@ def run_t3b(
         runtime_binding_fingerprint=plan.bindings.runtime_binding_fingerprint,
     )
     outcome = executor.run(plan)
+    if outcome.execution_permit_id:
+        trace.emit(
+            TraceEventType.EXECUTION_STATE,
+            state="execution_permit_consumed",
+            execution_permit_id=outcome.execution_permit_id,
+            execution_permit_digest=outcome.execution_permit_digest,
+            approval_fingerprint=plan.bindings.fingerprint,
+            execution_mode=execution_mode.value,
+            runtime_binding_fingerprint=plan.bindings.runtime_binding_fingerprint,
+        )
     for code in outcome.trace_codes:
         emit(code)
     for item in outcome.action_evidence:
@@ -1019,6 +1088,14 @@ def run_t3b(
         "prerequisite_evidence_ref": prerequisite.evidence_ref,
         "prerequisite_evidence_fingerprint": prerequisite.evidence_fingerprint,
         "runtime_binding_fingerprint": plan.bindings.runtime_binding_fingerprint,
+        "assurance_profile": assurance.profile.value,
+        "assurance_config_source": assurance.trusted_source,
+        # A run profile alone is not a production-readiness attestation.
+        "production_ready": False,
+        "aisvs_level_2_or_3_compliance_claimed": False,
+        "assurance_deferred_controls": (
+            list(DEFERRED_CHECKS) if assurance.profile is AssuranceProfile.POC else []
+        ),
         "outcome": asdict(outcome),
     }
     value = redactor.value(result) if redactor else result
