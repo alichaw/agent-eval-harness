@@ -27,12 +27,18 @@ systemctl status --no-pager hexstrike-t3-poc.service
 journalctl -u hexstrike-t3-poc.service --since '-5 minutes' --no-pager
 ss -ltnp | rg '127\.0\.0\.1:8888'
 cd /home/kali/agent-eval-harness
-sudo .venv/bin/python scripts/verify_t3_operator_readiness.py
+sudo .venv/bin/python scripts/verify_t3_operator_readiness.py \
+  --assurance-profile poc
 ```
 
-Expected: protected ownership/modes, loopback-only listener, sanitized logs, and PASS
-readiness. Retain command output. Stop for public binding, exposed protected values, or
-fail-open behavior. Kill switch and shutdown commands are:
+Expected: `assurance_profile: poc`, protected PoC configuration checks, fixed asset and
+limit checks, loopback-only listener, invalid-authorization rejection on all three PoC
+endpoints, replay and kill-switch checks, and `overall_pass: true`. Signed permits,
+approval-key isolation, hardened routes, and UID firewall enforcement must each report
+`status: SKIPPED_BY_PROFILE`; they must not be reported as PoC failures. Retain the
+sanitized JSON output. Stop for public binding, exposed protected values, a failed
+common control, a hardened check reported as passed under PoC, or any profile mismatch.
+Kill switch and shutdown commands are:
 
 ```bash
 sudo install -o hexstrike -g hexstrike -m 0600 /dev/null /run/hexstrike/KILL

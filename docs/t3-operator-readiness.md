@@ -7,7 +7,8 @@ No command in this procedure contacts the Windows asset.
 Run from the Harness repository:
 
 ```bash
-sudo .venv/bin/python scripts/verify_t3_operator_readiness.py
+sudo .venv/bin/python scripts/verify_t3_operator_readiness.py \
+  --assurance-profile hardened
 ```
 
 Return the JSON output. It contains no target address, credential material,
@@ -63,7 +64,8 @@ sudo install -o root -g root -m 0644 \
   /etc/systemd/system/hexstrike-t3.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now hexstrike-t3
-sudo .venv/bin/python scripts/verify_t3_operator_readiness.py
+sudo .venv/bin/python scripts/verify_t3_operator_readiness.py \
+  --assurance-profile hardened
 ```
 
 The unit fixes `HEXSTRIKE_HOST=127.0.0.1`, runs as `hexstrike`, and reads the
