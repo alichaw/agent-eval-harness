@@ -16,6 +16,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--confirm-isolated-lab", action="store_true")
     parser.add_argument("--runtime-config", required=True)
+    parser.add_argument("--t3a-result", required=True)
     parser.add_argument("--t3b-result", required=True)
     parser.add_argument("--approval-token-file", required=True)
     parser.add_argument("--approval-spent-dir", required=True)
@@ -34,7 +35,8 @@ def main() -> int:
     run_dir = run_t3c(
         proposal=T3CAgentProposal(action_id=ACTION_ID),
         config=config,
-        prerequisite_path=Path(args.t3b_result),
+        t3a_path=Path(args.t3a_result),
+        t3b_path=Path(args.t3b_result),
         authority=ApprovalAuthority(secret.encode(), args.approval_spent_dir),
         approval_token=token,
         executor=HexStrikeT3CExecutor(str(config.hexstrike_url)),

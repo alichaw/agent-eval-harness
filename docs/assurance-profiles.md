@@ -86,9 +86,9 @@ The protected files have separate responsibilities:
   credential reference to the same asset, low-privilege username, and protected
   identity-agent socket.
 - `/etc/hexstrike/t3c-runtime.json` is separate scenario state for
-  `t3c.controlled_impact_proof.v1`. It contains the fixed source/destination,
-  private destination target, credential reference, identity agent, username,
-  pinned-known-hosts path, proof marker, rollback checkpoint, and isolated-lab
+  `t3c.controlled_impact_proof.v1`. It contains one fixed asset and target,
+  credential and identity references, pinned-known-hosts path, fixed marker path
+  and digest, bounded limits, and cleanup, rollback-verification, and isolated-lab
   readiness assertions. It does not replace the common PoC runtime.
 
 Every `/etc/hexstrike/*.json` file above is required to be
@@ -111,9 +111,15 @@ server configuration constrains any accepted request to the only permitted
 asset, action, credential context, commands, and limits; it does not turn the
 opaque ID into a cryptographic action or asset binding.
 
-Offline tests prove the implementation and atomic replay behavior. Listener
-binding, service-account file access, protected runtime metadata, and real
-T3-A/T3-B/T3-C execution remain awaiting operator-reviewed live verification.
+Offline tests prove the implementation and atomic replay behavior. T3-A and T3-B
+are ready for human live-test preparation. T3-C is implemented as a single-asset
+reversible scenario and is ready for protected runtime installation and human
+live-test preparation. Listener binding, service-account file access, protected
+runtime metadata, and real T3-A/T3-B/T3-C execution remain awaiting separately
+authorized operator verification.
+
+This T3-C scenario validates a reversible controlled-impact operation on one
+approved isolated asset. It does not test or claim cross-host lateral movement.
 
 ## Readiness semantics
 

@@ -1,27 +1,16 @@
-# T3-C scenario decision required
+# T3-C single-asset decision
 
-`lab.synthetic-marker.v1` is currently modeled as a two-asset scenario in the Harness:
-the approval binding contains distinct source and destination asset IDs and readiness
-requires both resolved targets. The current HexStrike implementation, however, opens
-one direct SSH connection to `destination_target` and reads the fixed
-`/opt/t3c/proof-marker`; `source_asset_id` is not used by the executor.
+The approved contract is `lab.synthetic-marker.v2`: one approved isolated Windows
+asset and the registered action `t3c.controlled_impact_proof.v1`. The former
+source/destination pairing was removed because the executor used only one target.
 
-That implementation evidence suggests a possible single-target interpretation in which
-the Harness/HexStrike host is the executor identity rather than a source lab asset.
-Changing to that interpretation would alter the approval fingerprint, configuration
-schema, readiness comparison, manifest asset references, tests, and operator
-authorization presentation. It therefore requires an explicit human design decision
-and migration plan before code changes.
+The action confirms the fixed marker is absent, creates fixed synthetic content at
+the fixed test-only path, verifies its SHA-256 digest, removes it in a mandatory
+cleanup path, and verifies absence. Success requires every step. The HTTP caller can
+supply only an authorization ID and the canonical action.
 
-Until that decision is made, the existing two-asset contract remains authoritative and
-fails closed when the destination is absent, identical to the source, public, loopback,
-not exactly allowlisted, or covered by an operator-denied network. The current
-single-approved-asset/public-address environment is intentionally not T3-C ready.
+This T3-C scenario validates a reversible controlled-impact operation on one approved
+isolated asset. It does not test or claim cross-host lateral movement.
 
-An operator choosing to retain the two-asset design must provide a separately approved
-destination asset, distinct private isolated-lab addresses for both assets, complete
-company/production/management/VPN denied CIDRs, a predefined marker, and rollback
-evidence. No example values authorize execution.
-
-“This research PoC implements selected applicable AISVS controls. It does not claim
-complete conformity with AISVS Level 1, Level 2, or Level 3.”
+This research PoC implements selected applicable AISVS controls. It does not claim
+complete conformity with AISVS Level 1, Level 2, or Level 3.

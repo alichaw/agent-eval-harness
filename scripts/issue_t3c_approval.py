@@ -14,6 +14,7 @@ from core.t3.impact import ACTION_ID, T3CConfig, binding, validate_readiness
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runtime-config", required=True)
+    parser.add_argument("--t3a-result", required=True)
     parser.add_argument("--t3b-result", required=True)
     parser.add_argument("--approval-token-file", required=True)
     parser.add_argument("--approval-spent-dir", required=True)
@@ -23,16 +24,16 @@ def main() -> int:
     if len(secret.encode()) < 32:
         raise SystemExit("HARNESS_APPROVAL_SECRET must contain at least 32 bytes")
     config = T3CConfig.model_validate_json(Path(args.runtime_config).read_text(encoding="utf-8"))
-    prerequisite = Path(args.t3b_result)
     authority = ApprovalAuthority(secret.encode(), args.approval_spent_dir)
-    digest = validate_readiness(
+    t3a_digest, t3b_digest = validate_readiness(
         config,
-        prerequisite,
+        Path(args.t3a_result),
+        Path(args.t3b_result),
         seal_authority=ArtifactSealAuthority.from_approval_authority(authority),
     )
-    fingerprint = binding(config, digest)
+    fingerprint = binding(config, t3a_digest, t3b_digest)
     token = authority.issue(
-        config.source_asset_id,
+        config.asset_id,
         ACTION_ID,
         fingerprint,
         ttl_seconds=args.ttl_seconds,

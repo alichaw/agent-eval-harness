@@ -16,6 +16,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runtime-config", required=True)
     parser.add_argument("--hexstrike-config", required=True)
+    parser.add_argument("--t3a-result", required=True)
     parser.add_argument("--t3b-result", required=True)
     parser.add_argument("--approval-spent-dir", required=True)
     parser.add_argument("--approval-token-file", required=True)
@@ -28,14 +29,16 @@ def main() -> int:
     hexstrike = json.loads(Path(args.hexstrike_config).read_text(encoding="utf-8"))
     expected = {
         "scenario_id": config.scenario_id,
-        "source_asset_id": config.source_asset_id,
-        "destination_asset_id": config.destination_asset_id,
-        "destination_target": config.destination_target,
+        "asset_id": config.asset_id,
+        "target": config.target,
         "credential_ref": config.credential_ref,
-        "proof_marker": config.proof_marker,
-        "rollback_checkpoint": config.rollback_checkpoint,
-        "isolated_lab": config.isolated_lab,
-        "rollback_ready": config.rollback_ready,
+        "marker_path": config.marker_path,
+        "marker_content_sha256": config.marker_content_sha256,
+        "cleanup_required": config.cleanup_required,
+        "rollback_verification_required": config.rollback_verification_required,
+        "maximum_duration_seconds": config.maximum_duration_seconds,
+        "maximum_tool_calls": config.maximum_tool_calls,
+        "isolated_lab_ready": config.isolated_lab_ready,
     }
     if any(hexstrike.get(key) != value for key, value in expected.items()):
         raise SystemExit("FAIL: harness and HexStrike canonical scenario configuration differ")
@@ -45,16 +48,18 @@ def main() -> int:
     if token_path.exists():
         raise SystemExit("FAIL: approval token path already exists; issue a fresh approval later")
     authority = ApprovalAuthority(secret.encode(), args.approval_spent_dir)
-    digest = validate_readiness(
+    t3a_digest, t3b_digest = validate_readiness(
         config,
+        Path(args.t3a_result),
         Path(args.t3b_result),
         seal_authority=ArtifactSealAuthority.from_approval_authority(authority),
     )
     print("PASS: offline T3-C readiness checks completed")
     print(f"canonical action: {ACTION_ID}")
     print(f"scenario ID: {config.scenario_id}")
-    print(f"T3-B result digest: {digest}")
-    print(f"safe approval fingerprint: {binding(config, digest)}")
+    print(f"T3-A result digest: {t3a_digest}")
+    print(f"T3-B result digest: {t3b_digest}")
+    print(f"safe approval fingerprint: {binding(config, t3a_digest, t3b_digest)}")
     print("network traffic generated: false")
     return 0
 
