@@ -231,6 +231,7 @@ def cmd_t3_state(args) -> int:
         runs_root=args.runs_root,
         executor=HexStrikeSshReachabilityExecutor(),
         kill_switch=KillSwitch(Path(args.kill_switch_file)),
+        assurance_profile=args.assurance_profile,
     )
     result = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
     print(f"run dir : {run_dir}")
@@ -571,6 +572,107 @@ def cmd_t3_run(args) -> int:
     return 0 if result["completed"] else 1
 
 
+def cmd_t3_unified_run(args) -> int:
+    """Submit one protected, server-bound unified action without exposing secrets."""
+    import requests
+
+    from core.t3.poc_approval import ApprovalStore
+    from core.t3.poc_runner import load_authorization, run
+    from core.t3.poc_runtime import load_runtime
+
+    try:
+        runtime = load_runtime(args.runtime_file)
+        authorization_id = load_authorization(args.authorization_file)
+        action_id = ApprovalStore(runtime.approval_database).inspect_pending(
+            authorization_id,
+            "asset:winsrv2025-01",
+            str(runtime.runtime_revision),
+            runtime.digest,
+        )
+        if action_id not in runtime.action_policy["enabled_action_ids"]:
+            raise ValueError("action_not_enabled")
+        result = run(
+            runtime,
+            authorization_id=authorization_id,
+            action_id=action_id,
+            session=requests.Session(),
+        )
+    except Exception as exc:
+        allowed = {
+            "action_not_enabled",
+            "authorization_rejected",
+            "execution_denied",
+            "kill_switch_engaged",
+            "kill_switch_state_invalid",
+            "prerequisite_not_satisfied",
+            "protected authorization invalid",
+            "protected runtime invalid",
+        }
+        code = str(exc) if str(exc) in allowed else "unified_execution_failed"
+        raise SystemExit(code) from None
+    print(f"schema  : {result['schema_version']}")
+    print(f"action  : {result['action_id']}")
+    print(f"status  : {result['status']}")
+    print(f"runtime : {result['runtime_digest']}")
+    print(f"evidence: {result['evidence_ref']}")
+    return 0 if result["status"] == "completed" else 1
+
+
+def _cmd_t3_unified_authorize(args, action_id: str) -> int:
+    """Create one action-bound approval and owner-only authorization file."""
+    from core.t3.poc_approval import ApprovalStore
+    from core.t3.poc_runtime import load_runtime
+
+    output = Path(args.authorization_file)
+    descriptor = -1
+    try:
+        runtime = load_runtime(args.runtime_file)
+        if output.exists() or output.is_symlink():
+            raise ValueError("authorization_output_exists")
+        if Path(runtime.kill_switch_file).exists():
+            raise ValueError("kill_switch_engaged")
+        authorization_id = ApprovalStore(runtime.approval_database).issue(
+            action_id,
+            "asset:winsrv2025-01",
+            str(runtime.runtime_revision),
+            runtime.digest,
+            approving_uid=os.geteuid(),
+        )
+        descriptor = os.open(
+            output,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            json.dump({"authorization_id": authorization_id}, handle)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception as exc:
+        allowed = {
+            "authorization_output_exists",
+            "kill_switch_engaged",
+            "protected runtime invalid",
+        }
+        code = str(exc) if str(exc) in allowed else "authorization_creation_failed"
+        raise SystemExit(code) from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    print(f"approval: created for {action_id}")
+    print(f"authorization file: {output}")
+    return 0
+
+
+def cmd_t3_unified_authorize_reachability(args) -> int:
+    return _cmd_t3_unified_authorize(args, "t3a.ssh22_reachability.v1")
+
+
+def cmd_t3_unified_authorize_identity(args) -> int:
+    return _cmd_t3_unified_authorize(args, "windows.ssh.readonly_identity.v1")
+
+
 def _add_t3_proposal_arguments(parser) -> None:
     parser.add_argument("--asset-id", required=True)
     parser.add_argument(
@@ -706,6 +808,11 @@ def main(argv: list[str] | None = None) -> int:
     p_t3_state.add_argument("--runs-root", default="runs")
     p_t3_state.add_argument("--kill-switch-file", default="config/local/KILL")
     p_t3_state.add_argument(
+        "--assurance-profile",
+        choices=("poc", "hardened"),
+        default="hardened",
+    )
+    p_t3_state.add_argument(
         "--confirm-lab-probe",
         action="store_true",
         help="confirm one fixed TCP/22 probe to the registered isolated-lab asset",
@@ -744,6 +851,31 @@ def main(argv: list[str] | None = None) -> int:
     p_t3_run.add_argument("--runs-root", default="runs")
     p_t3_run.add_argument("--kill-switch-file", default="config/local/KILL")
     p_t3_run.set_defaults(func=cmd_t3_run)
+
+    p_unified = sub.add_parser(
+        "t3-unified-run",
+        help="submit one protected unified T3 authorization to loopback HexStrike",
+    )
+    p_unified.add_argument("--runtime-file", required=True)
+    p_unified.add_argument("--authorization-file", required=True)
+    p_unified.set_defaults(func=cmd_t3_unified_run)
+
+    for name, help_text, handler in (
+        (
+            "t3-unified-authorize-reachability",
+            "create one protected TCP/22 reachability approval",
+            cmd_t3_unified_authorize_reachability,
+        ),
+        (
+            "t3-unified-authorize-identity",
+            "create one protected Windows read-only identity approval",
+            cmd_t3_unified_authorize_identity,
+        ),
+    ):
+        approval_parser = sub.add_parser(name, help=help_text)
+        approval_parser.add_argument("--runtime-file", required=True)
+        approval_parser.add_argument("--authorization-file", required=True)
+        approval_parser.set_defaults(func=handler)
 
     args = parser.parse_args(argv)
     return args.func(args)

@@ -29,6 +29,20 @@ mode `0640`. Its schema is exact: additional keys are rejected. The target must
 be copied from the Harness `AssetRegistry`, never supplied on a CLI or endpoint
 request.
 
+The containing `/etc/hexstrike` directory must be `root:hexstrike` mode `0750` so
+the non-root service can traverse it without making protected files world-readable.
+Apply or validate this contract idempotently with
+`scripts/setup_t3_poc_config_permissions.sh --apply` or `--check`. The loader opens
+files without following symlinks, validates the opened descriptor as a regular file
+with exact `root:hexstrike 0640` metadata, and only then parses JSON. Missing,
+unreadable, malformed, wrong-owner, wrong-group, or wrong-mode files fail closed with
+a sanitized filename and expected-metadata diagnostic.
+
+PoC T3-A/T3-B action configuration is loaded lazily after request-scope and
+authorization validation. Missing unrelated action configuration therefore cannot
+prevent the fixed reachability route from starting, while action execution remains
+fail closed.
+
 The endpoint accepts only `action_id` and `asset_id`. Structured output contains
 exactly asset, port 22, TCP, SSH, and one state: `reachable`, `unreachable`, or
 `error`, plus a safe target-binding digest. The Harness recomputes that digest from

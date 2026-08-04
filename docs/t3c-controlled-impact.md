@@ -1,4 +1,7 @@
-# T3-C controlled-impact acceptance
+# T3-C controlled-impact acceptance (deprecated, not registered)
+
+This historical design is not part of the two-action unified Windows SSH PoC and
+is retained only as migration context.
 
 T3-C uses `lab.synthetic-marker.v2` and canonical action
 `t3c.controlled_impact_proof.v1`. Harness validates sealed successful T3-A and T3-B

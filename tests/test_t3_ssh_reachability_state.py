@@ -9,6 +9,8 @@ from core.investigation.models import InvestigationState
 from core.investigation.ssh_reachability import (
     CAPABILITY_ID,
     PROFILE_ID,
+    HexStrikeSshReachabilityExecutor,
+    SshReachabilityDiagnostic,
     SshReachabilityResult,
     produce_ssh_reachability_state,
 )
@@ -186,6 +188,38 @@ def test_missing_denied_networks_fail_closed_without_invocation(tmp_path):
     assert executor.invocation_count == 0
 
 
+def test_poc_single_exact_registered_target_allows_empty_denied_list(tmp_path):
+    executor = FakeExecutor()
+    run, *_ = produce(tmp_path, executor, denied=(), assurance_profile="poc")
+    assert CAPABILITY_ID in load_state(run).executed_capabilities
+    assert executor.invocation_count == 1
+
+
+def test_poc_different_target_is_denied_without_invocation(tmp_path):
+    executor = FakeExecutor()
+    assets, policy, _ = files(tmp_path, denied=())
+    policy.write_text(policy.read_text().replace(TARGET, "203.0.113.77"))
+    with pytest.raises(ValueError, match="target_not_allowed"):
+        produce_ssh_reachability_state(
+            asset_id=ASSET_ID,
+            assets_path=assets,
+            profiles_path=Path(__file__).parents[1] / "profiles.yaml",
+            policy_path=policy,
+            runs_root=tmp_path / "runs",
+            executor=executor,
+            kill_switch=KillSwitch(tmp_path / "KILL"),
+            assurance_profile="poc",
+        )
+    assert executor.invocation_count == 0
+
+
+def test_poc_explicit_deny_overlapping_registered_target_wins(tmp_path):
+    executor = FakeExecutor()
+    with pytest.raises(ValueError, match="target_forbidden_zone"):
+        produce(tmp_path, executor, denied=(f"{TARGET}/32",), assurance_profile="poc")
+    assert executor.invocation_count == 0
+
+
 def test_unknown_asset_and_caller_execution_fields_rejected(tmp_path):
     executor = FakeExecutor()
     assets, policy, _ = files(tmp_path, include_asset=False)
@@ -231,3 +265,50 @@ def test_missing_evidence_fields_fail_closed_and_no_credential_surface(tmp_path)
 def test_executor_target_binding_must_match_asset_registry(tmp_path):
     run, *_ = produce(tmp_path, FakeExecutor(wrong_target=True))
     assert CAPABILITY_ID in load_state(run).failed_capabilities
+    assert json.loads((run / "result.json").read_text())["diagnostic_code"] == (
+        "reachability_target_binding_mismatch"
+    )
+
+
+class FakeHttpResponse:
+    def __init__(self, status_code=200, value=None, json_error=False):
+        self.status_code = status_code
+        self.value = value
+        self.json_error = json_error
+
+    def json(self):
+        if self.json_error:
+            raise ValueError("synthetic invalid JSON")
+        return self.value
+
+
+def test_hexstrike_executor_distinguishes_connection_and_http_errors(monkeypatch):
+    import requests
+
+    executor = HexStrikeSshReachabilityExecutor()
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *a, **k: (_ for _ in ()).throw(requests.ConnectionError("synthetic")),
+    )
+    with pytest.raises(SshReachabilityDiagnostic) as connection:
+        executor.probe(ASSET_ID)
+    assert connection.value.code == "reachability_connection_error"
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: FakeHttpResponse(503))
+    with pytest.raises(SshReachabilityDiagnostic) as http:
+        executor.probe(ASSET_ID)
+    assert http.value.code == "reachability_http_error"
+
+
+@pytest.mark.parametrize(
+    "response",
+    [FakeHttpResponse(value=None), FakeHttpResponse(json_error=True)],
+)
+def test_hexstrike_executor_rejects_invalid_response_schema(monkeypatch, response):
+    import requests
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: response)
+    with pytest.raises(SshReachabilityDiagnostic) as caught:
+        HexStrikeSshReachabilityExecutor().probe(ASSET_ID)
+    assert caught.value.code == "reachability_response_schema_invalid"

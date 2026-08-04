@@ -198,8 +198,14 @@ def validate_readiness(
     config: T3CConfig, t3a_path: Path, t3b_path: Path, *, seal_authority: ArtifactSealAuthority
 ) -> tuple[str, str]:
     address = ipaddress.ip_address(config.target)
-    if not address.is_private or address.is_loopback:
-        raise ValueError("approved isolated private target required")
+    if (
+        address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_unspecified
+        or address.is_reserved
+    ):
+        raise ValueError("registered T3-C target is in a forbidden address class")
     if config.allowlisted_targets != (config.target,) or not config.denied_networks:
         raise ValueError("exact single-target allowlist and denied networks required")
     if any(address in ipaddress.ip_network(net, strict=False) for net in config.denied_networks):

@@ -1,6 +1,7 @@
 [Unit]
 Description=HexStrike bounded T3 execution service
-After=network.target
+Requires=hexstrike-t3-ssh-agent.service
+After=network.target hexstrike-t3-ssh-agent.service
 
 [Service]
 Type=simple
@@ -11,6 +12,7 @@ Environment=HOME=/var/lib/hexstrike
 Environment=HEXSTRIKE_HOST=127.0.0.1
 Environment=HEXSTRIKE_PORT=8888
 Environment=HEXSTRIKE_ASSURANCE_PROFILE=hardened
+Environment=SSH_AUTH_SOCK=/run/hexstrike-t3-ssh-agent/agent.sock
 EnvironmentFile=/etc/hexstrike/t3-permit.env
 ExecStart=/home/kali/hexstrike-ai/hexstrike-env/bin/python3 /home/kali/hexstrike-ai/hexstrike_server.py
 Restart=on-failure
@@ -18,7 +20,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/lib/hexstrike /run/hexstrike
+ReadWritePaths=/var/lib/hexstrike /run/hexstrike /run/hexstrike-t3-ssh-agent
 RuntimeDirectory=hexstrike
 RuntimeDirectoryMode=0750
 

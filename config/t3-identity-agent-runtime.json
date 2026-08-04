@@ -1,0 +1,7 @@
+{
+  "unit_name": "hexstrike-t3-ssh-agent.service",
+  "service_account": "hexstrike",
+  "runtime_directory": "/run/hexstrike-t3-ssh-agent",
+  "socket_path": "/run/hexstrike-t3-ssh-agent/agent.sock",
+  "provisioning_marker_path": "/run/hexstrike-t3-ssh-agent/identity-provisioned"
+}

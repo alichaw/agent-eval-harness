@@ -234,6 +234,38 @@ def test_configuration_fails_closed(updates, tmp_path):
         T3CConfig.model_validate(config)
 
 
+def test_registered_public_lab_target_is_allowed_by_exact_binding(tmp_path):
+    config, t3a, t3b, authority, _ = setup(tmp_path)
+    public = config.model_copy(
+        update={
+            "target": "8.8.8.8",
+            "allowlisted_targets": ("8.8.8.8",),
+        }
+    )
+    validate_readiness(
+        public,
+        t3a,
+        t3b,
+        seal_authority=ArtifactSealAuthority.from_approval_authority(authority),
+    )
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["127.0.0.1", "169.254.1.1", "224.0.0.1", "0.0.0.0", "255.255.255.255"],
+)
+def test_forbidden_address_classes_are_rejected(tmp_path, target):
+    config, t3a, t3b, authority, _ = setup(tmp_path)
+    selected = config.model_copy(update={"target": target, "allowlisted_targets": (target,)})
+    with pytest.raises(ValueError, match="forbidden address class"):
+        validate_readiness(
+            selected,
+            t3a,
+            t3b,
+            seal_authority=ArtifactSealAuthority.from_approval_authority(authority),
+        )
+
+
 def test_http_adapter_payload_has_only_authorization_and_action(monkeypatch):
     captured = {}
 

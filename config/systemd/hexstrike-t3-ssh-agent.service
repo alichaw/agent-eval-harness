@@ -1,0 +1,19 @@
+[Unit]
+Description=HexStrike T3 dedicated SSH identity agent
+Before=hexstrike-t3-poc.service hexstrike-t3.service
+PartOf=hexstrike-t3-poc.service hexstrike-t3.service
+
+[Service]
+Type=simple
+User=hexstrike
+Group=hexstrike
+UMask=0077
+RuntimeDirectory=hexstrike-t3-ssh-agent
+RuntimeDirectoryMode=0700
+ExecStart=/usr/bin/ssh-agent -D -a /run/hexstrike-t3-ssh-agent/agent.sock
+KillMode=control-group
+TimeoutStopSec=10s
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

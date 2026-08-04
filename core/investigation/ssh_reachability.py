@@ -29,6 +29,14 @@ PORT = 22
 TIMEOUT_SECONDS = 5
 
 
+class SshReachabilityDiagnostic(RuntimeError):
+    """Sanitized local diagnostic that never carries target or response content."""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
 def target_binding(asset_id: str, target: str, port: int = PORT) -> str:
     return hashlib.sha256(f"{asset_id}\0{target}\0{port}".encode()).hexdigest()
 
@@ -62,13 +70,20 @@ class HexStrikeSshReachabilityExecutor:
         import requests
 
         self.invocation_count += 1
-        response = requests.post(
-            f"{self.base_url}/api/v1/t3/ssh-reachability",
-            json={"action_id": ACTION_ID, "asset_id": asset_id},
-            timeout=TIMEOUT_SECONDS + 1,
-        )
-        response.raise_for_status()
-        value = response.json()
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/v1/t3/ssh-reachability",
+                json={"action_id": ACTION_ID, "asset_id": asset_id},
+                timeout=TIMEOUT_SECONDS + 1,
+            )
+        except requests.RequestException as exc:
+            raise SshReachabilityDiagnostic("reachability_connection_error") from exc
+        if not 200 <= response.status_code < 300:
+            raise SshReachabilityDiagnostic("reachability_http_error")
+        try:
+            value = response.json()
+        except (TypeError, ValueError) as exc:
+            raise SshReachabilityDiagnostic("reachability_response_schema_invalid") from exc
         required = {
             "schema_version",
             "action_id",
@@ -91,7 +106,7 @@ class HexStrikeSshReachabilityExecutor:
             or value.get("state") not in {"reachable", "unreachable", "error"}
             or not isinstance(value.get("target_binding"), str)
         ):
-            raise ValueError("invalid SSH reachability response")
+            raise SshReachabilityDiagnostic("reachability_response_schema_invalid")
         return SshReachabilityResult(
             asset_id=value["asset_id"],
             port=value["port"],
@@ -111,6 +126,7 @@ def produce_ssh_reachability_state(
     runs_root: str | Path,
     executor: SshReachabilityExecutor,
     kill_switch: KillSwitch,
+    assurance_profile: str = "hardened",
 ) -> Path:
     """Produce one auditable InvestigationState using the canonical state transition."""
 
@@ -139,7 +155,23 @@ def produce_ssh_reachability_state(
     target = target.strip()
     expected_target_binding = target_binding(asset_id, target)
     policy = Policy.from_yaml(policy_path)
-    if not policy.denied_targets:
+    if assurance_profile not in {"poc", "hardened"}:
+        raise ValueError("known assurance profile required")
+    registered_poc_targets = [
+        value.get("target")
+        for _, value in assets.items()
+        if value.get("asset_type") == "host"
+        and value.get("execution_scope") == "isolated_lab"
+        and value.get("platform") == "windows_openssh"
+        and value.get("ssh_port") == PORT
+        and isinstance(value.get("target"), str)
+        and value.get("target", "").strip()
+    ]
+    if not policy.denied_targets and (
+        assurance_profile != "poc"
+        or policy.default != "deny"
+        or registered_poc_targets != [target]
+    ):
         raise ValueError("operator denied-target CIDRs are required")
     decision = policy.check(ActionRequest(tool=TOOL_ID, target=target))
     if decision.verdict is not Verdict.ALLOW:
@@ -158,6 +190,7 @@ def produce_ssh_reachability_state(
         objective="Establish canonical TCP/22 SSH reachability evidence for bounded T3-A",
     )
     started = datetime.now(timezone.utc)
+    diagnostic_code = "none"
     trace.emit(
         TraceEventType.POLICY_EVENT,
         rule=decision.rule,
@@ -182,17 +215,18 @@ def produce_ssh_reachability_state(
         if kill_switch.engaged():
             raise ValueError("kill switch engaged")
         result = executor.probe(asset_id)
+        if result.target_binding != expected_target_binding:
+            raise SshReachabilityDiagnostic("reachability_target_binding_mismatch")
         if (
             result.asset_id != asset_id
             or result.port != PORT
             or result.protocol != "tcp"
             or result.service not in {"ssh", "openssh"}
             or result.state not in {"reachable", "unreachable", "error"}
-            or result.target_binding != expected_target_binding
         ):
-            raise ValueError("invalid reachability evidence")
+            raise SshReachabilityDiagnostic("reachability_response_schema_invalid")
         if result.state == "error":
-            raise ValueError("reachability executor reported an error")
+            raise SshReachabilityDiagnostic("reachability_connector_error")
         reachable = result.state == "reachable"
         facts = {
             "port": PORT,
@@ -231,7 +265,12 @@ def produce_ssh_reachability_state(
             result_digest=hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest(),
             text=rule,
         )
-    except Exception:
+    except Exception as exc:
+        diagnostic_code = (
+            exc.code
+            if isinstance(exc, SshReachabilityDiagnostic)
+            else "reachability_internal_error"
+        )
         facts = {
             "port": PORT,
             "open_ports": [],
@@ -295,6 +334,7 @@ def produce_ssh_reachability_state(
                 "completed": completed,
                 "status": "verified" if completed else "failed",
                 "rule": rule,
+                "diagnostic_code": diagnostic_code,
                 "credential_resolved": False,
                 "ssh_login_attempted": False,
                 "production_ready": False,

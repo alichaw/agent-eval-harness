@@ -22,6 +22,13 @@ from typing import Any
 import yaml
 
 
+class ReadinessCheckError(Exception):
+    def __init__(self, check: str, code: str):
+        super().__init__(code)
+        self.check = check
+        self.code = code
+
+
 def _metadata(path: Path) -> dict[str, object]:
     info = path.stat()
     return {
@@ -195,31 +202,10 @@ def _verify_hardened(args: argparse.Namespace) -> tuple[dict[str, object], bool]
         "expected_binding_pass": mapping_pass,
     }
 
-    socket_result: dict[str, object] = {"present": False}
-    if mapping_pass:
-        socket_path = Path(mapping["identity_agent"])
-        socket_info = socket_path.stat()
-        readable = (
-            subprocess.run(
-                ["runuser", "-u", "hexstrike", "--", "test", "-r", str(socket_path)],
-                check=False,
-            ).returncode
-            == 0
-        )
-        writable = (
-            subprocess.run(
-                ["runuser", "-u", "hexstrike", "--", "test", "-w", str(socket_path)],
-                check=False,
-            ).returncode
-            == 0
-        )
-        socket_result = {
-            **_metadata(socket_path),
-            "present": True,
-            "is_socket": stat.S_ISSOCK(socket_info.st_mode),
-            "hexstrike_readable": readable,
-            "hexstrike_writable": writable,
-        }
+    socket_result = _identity_agent_result(
+        harness,
+        (mapping.get("identity_agent") if isinstance(mapping, dict) else None,),
+    )
 
     listener = _command("ss", "-ltnp", "sport = :8888")
     bind_result = {
@@ -310,9 +296,7 @@ def _verify_hardened(args: argparse.Namespace) -> tuple[dict[str, object], bool]
         credential_result["group_pass"],
         credential_result["mode_pass"],
         credential_result["expected_binding_pass"],
-        socket_result.get("is_socket"),
-        socket_result.get("hexstrike_readable"),
-        socket_result.get("hexstrike_writable"),
+        socket_result.get("status") == "PASS",
         bind_result["loopback_only_pass"],
         *(value for key, value in code_result.items() if key != "source_revision"),
         permit_result["harness"]["owner_pass"],
@@ -329,25 +313,265 @@ def _verify_hardened(args: argparse.Namespace) -> tuple[dict[str, object], bool]
     return report, all(checks)
 
 
-def _protected_json_result(path: Path) -> tuple[dict[str, Any], dict[str, object]]:
-    value = json.loads(path.read_text(encoding="utf-8"))
+def _protected_json_result(
+    path: Path, check: str | None = None
+) -> tuple[dict[str, Any], dict[str, object]]:
+    selected_check = check or path.name.removesuffix(".json").replace("-", "_")
+    try:
+        raw = path.read_text(encoding="utf-8")
+        info = path.stat()
+        value = json.loads(raw)
+    except FileNotFoundError as exc:
+        raise ReadinessCheckError(selected_check, "configuration_missing") from exc
+    except PermissionError as exc:
+        raise ReadinessCheckError(selected_check, "configuration_unreadable") from exc
+    except json.JSONDecodeError as exc:
+        raise ReadinessCheckError(selected_check, "configuration_json_invalid") from exc
+    except OSError as exc:
+        raise ReadinessCheckError(selected_check, "configuration_metadata_unavailable") from exc
+    if not isinstance(value, dict):
+        raise ReadinessCheckError(selected_check, "configuration_root_not_object")
     result = {
         **_metadata(path),
-        "owner_pass": path.stat().st_uid == 0,
-        "group_pass": grp.getgrgid(path.stat().st_gid).gr_name == "hexstrike",
-        "mode_pass": stat.S_IMODE(path.stat().st_mode) == 0o640,
+        "owner_pass": info.st_uid == 0,
+        "group_pass": grp.getgrgid(info.st_gid).gr_name == "hexstrike",
+        "mode_pass": stat.S_IMODE(info.st_mode) == 0o640,
     }
     return value, result
+
+
+def _diagnose(result: dict[str, object], rules: dict[str, str]) -> None:
+    codes = [code for key, code in rules.items() if result.get(key) is not True]
+    result["status"] = "PASS" if not codes else "FAIL"
+    result["error_codes"] = codes
+
+
+def _lstat(path: Path) -> os.stat_result:
+    return path.lstat()
+
+
+def _systemd_unit_active(unit_name: str) -> bool:
+    return (
+        subprocess.run(
+            ["systemctl", "is-active", "--quiet", unit_name],
+            check=False,
+            capture_output=True,
+            timeout=10,
+        ).returncode
+        == 0
+    )
+
+
+def _identity_agent_result(
+    harness: Path,
+    configured_agents: tuple[object, ...],
+    *,
+    systemd_root: Path = Path("/etc/systemd/system"),
+) -> dict[str, object]:
+    """Validate the fixed agent contract without opening or querying the agent."""
+    result: dict[str, object] = {
+        "repository_contract_defined": False,
+        "configuration_binding_pass": False,
+        "systemd_unit_installed": False,
+        "systemd_unit_contract_pass": False,
+        "service_running": False,
+        "runtime_directory_available": False,
+        "runtime_directory_type_pass": False,
+        "runtime_directory_owner_pass": False,
+        "runtime_directory_access_pass": False,
+        "socket_available": False,
+        "socket_type_pass": False,
+        "socket_owner_pass": False,
+        "socket_access_pass": False,
+        "identity_provisioning_completed": False,
+    }
+    contract_path = harness / "config/t3-identity-agent-runtime.json"
+    if not contract_path.is_file():
+        result.update(
+            status="FAIL",
+            error_code="identity_agent_runtime_contract_missing",
+            error_codes=["identity_agent_runtime_contract_missing"],
+        )
+        return result
+    try:
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        required = {
+            "unit_name",
+            "service_account",
+            "runtime_directory",
+            "socket_path",
+            "provisioning_marker_path",
+        }
+        if not isinstance(contract, dict) or set(contract) != required:
+            raise ValueError
+        unit_name = contract["unit_name"]
+        account = contract["service_account"]
+        runtime = Path(contract["runtime_directory"])
+        socket_path = Path(contract["socket_path"])
+        marker_path = Path(contract["provisioning_marker_path"])
+        if (
+            unit_name != "hexstrike-t3-ssh-agent.service"
+            or account != "hexstrike"
+            or not runtime.is_absolute()
+            or not socket_path.is_absolute()
+            or not marker_path.is_absolute()
+            or runtime == Path("/run")
+            or Path("/run") not in runtime.parents
+            or socket_path.parent != runtime
+            or marker_path.parent != runtime
+        ):
+            raise ValueError
+        result["repository_contract_defined"] = True
+    except (OSError, TypeError, ValueError):
+        result.update(
+            status="FAIL",
+            error_code="identity_agent_runtime_contract_invalid",
+            error_codes=["identity_agent_runtime_contract_invalid"],
+        )
+        return result
+
+    result["configuration_binding_pass"] = bool(configured_agents) and all(
+        value == str(socket_path) for value in configured_agents
+    )
+    unit_path = systemd_root / unit_name
+    try:
+        unit_source = unit_path.read_text(encoding="utf-8")
+        result["systemd_unit_installed"] = True
+        result["systemd_unit_contract_pass"] = all(
+            value in unit_source
+            for value in (
+                "User=hexstrike",
+                "Group=hexstrike",
+                f"RuntimeDirectory={runtime.name}",
+                "RuntimeDirectoryMode=0700",
+                f"ExecStart=/usr/bin/ssh-agent -D -a {socket_path}",
+                "UMask=0077",
+            )
+        )
+    except OSError:
+        pass
+
+    result["service_running"] = (
+        _systemd_unit_active(unit_name) if result["systemd_unit_installed"] else False
+    )
+
+    try:
+        runtime_info = _lstat(runtime)
+        account_info = pwd.getpwnam(account)
+        runtime_mode = stat.S_IMODE(runtime_info.st_mode)
+        result["runtime_directory_available"] = True
+        result["runtime_directory_type_pass"] = stat.S_ISDIR(runtime_info.st_mode)
+        result["runtime_directory_owner_pass"] = runtime_info.st_uid == account_info.pw_uid
+        result["runtime_directory_access_pass"] = (
+            result["runtime_directory_owner_pass"]
+            and (runtime_mode >> 6) & 0o7 == 0o7
+            and runtime_mode & 0o007 == 0
+        )
+    except (FileNotFoundError, PermissionError, KeyError):
+        pass
+
+    try:
+        socket_info = _lstat(socket_path)
+        result["socket_available"] = True
+        result["socket_type_pass"] = stat.S_ISSOCK(socket_info.st_mode)
+        account_info = pwd.getpwnam(account)
+        result["socket_owner_pass"] = socket_info.st_uid == account_info.pw_uid
+        owner_bits = (stat.S_IMODE(socket_info.st_mode) >> 6) & 0o7
+        result["socket_access_pass"] = (
+            result["socket_owner_pass"]
+            and owner_bits & 0o6 == 0o6
+            and stat.S_IMODE(socket_info.st_mode) & 0o006 == 0
+        )
+    except (FileNotFoundError, PermissionError, KeyError):
+        pass
+
+    try:
+        marker_info = _lstat(marker_path)
+        result["identity_provisioning_completed"] = (
+            stat.S_ISREG(marker_info.st_mode)
+            and marker_info.st_uid == pwd.getpwnam(account).pw_uid
+            and stat.S_IMODE(marker_info.st_mode) & 0o077 == 0
+        )
+    except (FileNotFoundError, PermissionError, KeyError):
+        pass
+
+    ordered_failures = (
+        ("configuration_binding_pass", "identity_agent_binding_invalid"),
+        ("systemd_unit_installed", "identity_agent_unit_missing"),
+        ("systemd_unit_contract_pass", "identity_agent_unit_contract_invalid"),
+        ("runtime_directory_available", "identity_agent_runtime_directory_unavailable"),
+        ("runtime_directory_type_pass", "identity_agent_runtime_directory_wrong_type"),
+        ("runtime_directory_owner_pass", "identity_agent_runtime_directory_owner_invalid"),
+        ("runtime_directory_access_pass", "identity_agent_runtime_directory_inaccessible"),
+        ("socket_available", "identity_agent_socket_unavailable"),
+        ("socket_type_pass", "identity_agent_socket_wrong_type"),
+        ("socket_owner_pass", "identity_agent_socket_owner_invalid"),
+        ("socket_access_pass", "identity_agent_socket_inaccessible"),
+        ("service_running", "identity_agent_service_not_running"),
+        ("identity_provisioning_completed", "identity_agent_identity_unprovisioned"),
+    )
+    codes = [code for key, code in ordered_failures if result[key] is not True]
+    result["status"] = "PASS" if not codes else "FAIL"
+    result["error_codes"] = codes
+    if codes:
+        result["error_code"] = codes[0]
+    return result
+
+
+def _pinned_host_source_result(value: object, expected_key: object) -> dict[str, object]:
+    result: dict[str, object] = {
+        "owner_pass": False,
+        "group_pass": False,
+        "mode_pass": False,
+        "key_binding_pass": False,
+    }
+    if not isinstance(value, str) or not value.startswith("/") or not isinstance(expected_key, str):
+        _diagnose(result, {"key_binding_pass": "pinned_host_source_invalid"})
+        return result
+    try:
+        path = Path(value)
+        info = path.stat()
+        lines = path.read_text(encoding="utf-8").splitlines()
+        result.update(
+            {
+                "owner_pass": info.st_uid == 0,
+                "group_pass": grp.getgrgid(info.st_gid).gr_name == "hexstrike",
+                "mode_pass": stat.S_IMODE(info.st_mode) == 0o640,
+                "key_binding_pass": any(
+                    line.split(maxsplit=1)[-1] == expected_key
+                    for line in lines
+                    if line and not line.lstrip().startswith("#") and " " in line
+                ),
+            }
+        )
+    except (OSError, UnicodeError):
+        pass
+    _diagnose(
+        result,
+        {
+            "owner_pass": "pinned_host_source_owner_invalid",
+            "group_pass": "pinned_host_source_group_invalid",
+            "mode_pass": "pinned_host_source_mode_invalid",
+            "key_binding_pass": "pinned_host_source_binding_invalid",
+        },
+    )
+    return result
 
 
 def _skipped(reason: str = "poc_profile") -> dict[str, str]:
     return {"status": "SKIPPED_BY_PROFILE", "reason": reason}
 
+def _kill_switch_inactive(path: Path) -> bool:
+    """Return True only when the kill-switch path is confirmed absent."""
+    try:
+        return not path.exists()
+    except OSError:
+        return False
 
 def _verify_poc(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
     harness = Path(args.harness_root)
     hexstrike = Path(args.hexstrike_root)
-    assets_doc = yaml.safe_load((harness / "config/local/assets.yaml").read_text(encoding="utf-8"))
+    assets_doc = yaml.safe_load((harness / "assets.yaml").read_text(encoding="utf-8"))
     asset = assets_doc["assets"]["asset:winsrv2025-01"]
     target = str(asset["target"])
     ipaddress.IPv4Address(target)
@@ -368,6 +592,18 @@ def _verify_poc(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
             "fixed_port_pass": reachability.get("port") == 22,
         }
     )
+    _diagnose(
+        reachability_result,
+        {
+            "owner_pass": "owner_invalid",
+            "group_pass": "group_invalid",
+            "mode_pass": "mode_invalid",
+            "exact_schema_pass": "schema_invalid",
+            "asset_binding_pass": "asset_binding_invalid",
+            "target_binding_pass": "target_binding_invalid",
+            "fixed_port_pass": "port_binding_invalid",
+        },
+    )
 
     runtime, runtime_result = _protected_json_result(Path("/etc/hexstrike/t3-poc-runtime.json"))
     runtime_result.update(
@@ -381,6 +617,19 @@ def _verify_poc(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
             and runtime.get("pinned_host_key", "").startswith("ssh-ed25519 "),
         }
     )
+    _diagnose(
+        runtime_result,
+        {
+            "owner_pass": "owner_invalid",
+            "group_pass": "group_invalid",
+            "mode_pass": "mode_invalid",
+            "exact_schema_pass": "schema_invalid",
+            "profile_pass": "assurance_profile_invalid",
+            "asset_binding_pass": "asset_binding_invalid",
+            "target_binding_pass": "target_binding_invalid",
+            "pinned_host_key_present": "pinned_host_key_invalid",
+        },
+    )
 
     matrix, matrix_result = _protected_json_result(Path("/etc/hexstrike/job-targets.json"))
     matrix_result.update(
@@ -388,6 +637,16 @@ def _verify_poc(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
             "exact_schema_pass": set(matrix) == {"allowed_targets"},
             "fixed_target_pass": matrix.get("allowed_targets") == [f"{target}/32"],
         }
+    )
+    _diagnose(
+        matrix_result,
+        {
+            "owner_pass": "owner_invalid",
+            "group_pass": "group_invalid",
+            "mode_pass": "mode_invalid",
+            "exact_schema_pass": "schema_invalid",
+            "fixed_target_pass": "target_binding_invalid",
+        },
     )
 
     credentials, credential_result = _protected_json_result(
@@ -402,6 +661,15 @@ def _verify_poc(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
             and isinstance(mapping.get("identity_agent"), str),
             "identity_loaded": False,
         }
+    )
+    _diagnose(
+        credential_result,
+        {
+            "owner_pass": "owner_invalid",
+            "group_pass": "group_invalid",
+            "mode_pass": "mode_invalid",
+            "exact_binding_pass": "credential_binding_invalid",
+        },
     )
 
     t3c, t3c_result = _protected_json_result(Path("/etc/hexstrike/t3c-runtime.json"))
@@ -430,6 +698,10 @@ def _verify_poc(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
             "scenario_pass": t3c.get("scenario_id") == "lab.synthetic-marker.v2",
             "asset_binding_pass": t3c.get("asset_id") == "asset:winsrv2025-01",
             "target_binding_pass": t3c.get("target") == target,
+            "credential_binding_pass": t3c.get("credential_ref") == "credential:ssh-winsrv2025-01",
+            "identity_binding_pass": isinstance(mapping, dict)
+            and t3c.get("username") == mapping.get("username")
+            and t3c.get("identity_agent") == mapping.get("identity_agent"),
             "marker_binding_pass": t3c.get("marker_path")
             == r"C:\ProgramData\HexStrike\t3c-synthetic-marker.txt"
             and t3c.get("marker_content_sha256") == expected_marker_digest,
@@ -439,6 +711,36 @@ def _verify_poc(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
             and t3c.get("maximum_tool_calls") == 6,
             "isolated_lab_pass": t3c.get("isolated_lab_ready") is True,
         }
+    )
+    _diagnose(
+        t3c_result,
+        {
+            "owner_pass": "owner_invalid",
+            "group_pass": "group_invalid",
+            "mode_pass": "mode_invalid",
+            "exact_schema_pass": "schema_invalid",
+            "profile_pass": "assurance_profile_invalid",
+            "scenario_pass": "scenario_invalid",
+            "asset_binding_pass": "asset_binding_invalid",
+            "target_binding_pass": "target_binding_invalid",
+            "credential_binding_pass": "credential_binding_invalid",
+            "identity_binding_pass": "identity_binding_invalid",
+            "marker_binding_pass": "marker_contract_invalid",
+            "cleanup_required_pass": "cleanup_requirement_invalid",
+            "rollback_required_pass": "rollback_requirement_invalid",
+            "limits_pass": "limits_invalid",
+            "isolated_lab_pass": "isolated_lab_assertion_invalid",
+        },
+    )
+    pinned_host_result = _pinned_host_source_result(
+        t3c.get("pinned_host_key_file"), runtime.get("pinned_host_key")
+    )
+    identity_agent_result = _identity_agent_result(
+        harness,
+        (
+            mapping.get("identity_agent") if isinstance(mapping, dict) else None,
+            t3c.get("identity_agent"),
+        ),
     )
 
     listener = _command("ss", "-ltnp", "sport = :8888")
@@ -486,8 +788,8 @@ def _verify_poc(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
     }
     kill_switch_path = Path("/run/hexstrike/KILL")
     kill_switch_result = {
-        "path": "/run/hexstrike/KILL",
-        "inactive_pass": not kill_switch_path.exists(),
+        "path": str(kill_switch_path),
+        "inactive_pass": _kill_switch_inactive(kill_switch_path),
         "t3a_check_present": "kill_switch_path.exists()"
         in (hexstrike / "hexstrike_t3a.py").read_text(encoding="utf-8"),
         "t3b_check_present": "kill_switch_path.exists()"
@@ -501,6 +803,8 @@ def _verify_poc(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
         "target_matrix": matrix_result,
         "credential_mapping": credential_result,
         "t3c_runtime_configuration": t3c_result,
+        "pinned_host_key_source": pinned_host_result,
+        "identity_agent_runtime": identity_agent_result,
         "hexstrike_bind": bind_result,
         "poc_endpoints": endpoint_result,
         "replay_protection": replay_result,
@@ -517,24 +821,33 @@ def _verify_poc(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
         matrix_result,
         credential_result,
         t3c_result,
+        pinned_host_result,
+        identity_agent_result,
         bind_result,
         endpoint_result,
         replay_result,
         limits_result,
         kill_switch_result,
     )
-    passed = all(
-        value is True
-        for section in common_sections
-        for key, value in section.items()
-        if key.endswith("_pass") or key.endswith("_present") or key.endswith("_rejected")
+    passed = (
+        all(
+            value is True
+            for section in common_sections
+            for key, value in section.items()
+            if key.endswith("_pass") or key.endswith("_present") or key.endswith("_rejected")
+        )
+        and identity_agent_result["status"] == "PASS"
     )
     return report, passed
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--assurance-profile", required=True, choices=("poc", "hardened"))
+    parser.add_argument(
+        "--assurance-profile",
+        required=True,
+        choices=("poc", "hardened"),
+    )
     parser.add_argument("--harness-root", default="/home/kali/agent-eval-harness")
     parser.add_argument("--hexstrike-root", default="/home/kali/hexstrike-ai")
     args = parser.parse_args(argv)
@@ -542,9 +855,22 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"overall_pass": False, "error_code": "sudo_required"}))
         return 2
     try:
-        report, passed = (
-            _verify_poc(args) if args.assurance_profile == "poc" else _verify_hardened(args)
+        if args.assurance_profile == "poc":
+            report, passed = _verify_poc(args)
+        else:
+            report, passed = _verify_hardened(args)
+    except ReadinessCheckError as exc:
+        print(
+            json.dumps(
+                {
+                    "assurance_profile": args.assurance_profile,
+                    "overall_pass": False,
+                    "failed_check": exc.check,
+                    "error_code": exc.code,
+                }
+            )
         )
+        return 2
     except Exception:  # noqa: BLE001 - never expose protected paths or values
         print(json.dumps({"overall_pass": False, "error_code": "readiness_verification_failed"}))
         return 2

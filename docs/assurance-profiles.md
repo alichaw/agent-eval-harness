@@ -1,5 +1,9 @@
 # Decision: dual T3 assurance profiles
 
+> Deprecated compatibility note: the current production PoC startup registers
+> only the unified two-action Windows SSH route. The legacy profile-specific
+> T3-A/B/C modules remain unregistered migration fixtures.
+
 ## Status
 
 Accepted for the research PoC. This decision does not authorize production use
@@ -85,6 +89,14 @@ The protected files have separate responsibilities:
   used by T3-A/T3-B, while `/etc/hexstrike/t3a-credentials.json` maps the fixed
   credential reference to the same asset, low-privilege username, and protected
   identity-agent socket.
+
+The identity-agent value is fixed by
+`config/t3-identity-agent-runtime.json` and the repository-owned
+`hexstrike-t3-ssh-agent.service`. Both PoC and hardened HexStrike units depend on that
+service and receive its stable socket through an explicit service environment
+binding. Neither profile may inherit a transient operator-shell agent, substitute a
+private-key path, or fall back to the other profile. Socket availability and identity
+provisioning are reported as distinct readiness states.
 - `/etc/hexstrike/t3c-runtime.json` is separate scenario state for
   `t3c.controlled_impact_proof.v1`. It contains one fixed asset and target,
   credential and identity references, pinned-known-hosts path, fixed marker path

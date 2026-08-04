@@ -88,7 +88,7 @@ active_tools:
 allowed_targets:
   - juiceshop
   - 192.0.2.10/32     # asset:t1-target — renamed from the old docker-hostname entry
-  - 192.0.2.10/32
+  - 198.51.100.25/32
   - 198.51.100.25/32     # documentation-only example for asset:winsrv2025-01
   # - 10.20.0.0/24         # authorised test VLAN        (example — replace)
   # - 10.20.1.0/24         # authorised endpoint segment (example — replace)
@@ -180,6 +180,13 @@ t3_low:
     - target_access_log
     - network_flow_log
     - credential_reference_log   # WHICH credential set was used, never the value
+
+# Exact server-side unified PoC action allowlist. The prepare tool copies only
+# these canonical IDs into the protected unified runtime and rejects aliases.
+unified_t3:
+  enabled_action_ids:
+    - t3a.ssh22_reachability.v1
+    - windows.ssh.readonly_identity.v1
 
 # T3-High: credential extraction / lateral movement / password guessing.
 # Output at this tier is itself the sensitive artifact (plaintext passwords,

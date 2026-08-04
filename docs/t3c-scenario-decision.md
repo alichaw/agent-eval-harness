@@ -1,4 +1,7 @@
-# T3-C single-asset decision
+# T3-C single-asset decision (deprecated, not registered)
+
+This historical scenario is outside the unified research PoC. Production startup
+does not register a T3-C or marker route.
 
 The approved contract is `lab.synthetic-marker.v2`: one approved isolated Windows
 asset and the registered action `t3c.controlled_impact_proof.v1`. The former

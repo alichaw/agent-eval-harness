@@ -55,6 +55,16 @@ synthetic loopback permit; do not compare or display the values.
 
 ## Loopback binding and restart
 
+Before listener deployment, install and inspect
+`config/systemd/hexstrike-t3-ssh-agent.service` and
+`config/t3-identity-agent-runtime.json`. The service-owned agent must be started and
+provisioned through the protected operator procedure before HexStrike. Readiness
+checks only socket metadata and the runtime-scoped provisioning marker; it never
+opens the agent or lists identities. The following are separate states and must not be
+collapsed: repository contract defined, unit installed, service running, socket
+available, and identity provisioning completed. An available empty agent is not
+ready.
+
 The existing sandbox bootstrap also rebuilds and probes unrelated targets, so
 do not use it for this acceptance test. Install this dedicated service unit:
 

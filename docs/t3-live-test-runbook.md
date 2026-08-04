@@ -17,10 +17,163 @@ required. Confirm the marker contains no business or personal data and is absent
 Human action: back up existing files, edit secrets interactively without command-line
 values, install protected copies, inspect the unit, start and verify the listener.
 
+The HexStrike documentation-only templates are:
+
+- `/home/kali/hexstrike-ai/t3-poc-runtime.example.json`;
+- `/home/kali/hexstrike-ai/t3a-credentials.example.json`; and
+- `/home/kali/hexstrike-ai/t3c-runtime.example.json`.
+
+### Dedicated identity-agent deployment phases
+
+The repository-defined agent unit is `hexstrike-t3-ssh-agent.service`. Its fixed
+socket and provisioning-marker locations are defined by
+`config/t3-identity-agent-runtime.json`; operators must not replace them with
+`SSH_AUTH_SOCK` from an interactive shell, a path under `/tmp`, or a private-key
+path. The unit runs `ssh-agent` in the foreground as `hexstrike`, creates its private
+runtime directory through systemd, and removes the socket and provisioning marker
+when the unit stops.
+
+Perform these later deployment steps manually; they are not part of offline testing:
+
+1. Inspect the repository unit and JSON contract. Confirm the unit uses `User` and
+   `Group` `hexstrike`, `RuntimeDirectoryMode=0700`, `UMask=0077`, foreground agent
+   mode, and the exact fixed socket from the contract.
+2. Install the agent unit and the selected HexStrike service unit as protected
+   systemd configuration, then run `systemctl daemon-reload`.
+3. Start only `hexstrike-t3-ssh-agent.service`. Confirm systemd reports it active and
+   that the fixed path exists, is a Unix-domain socket owned and accessible by
+   `hexstrike`, and has no world access. Do not list identities during this check.
+4. Provision the approved low-privilege identity using a separate protected operator
+   procedure. Only after that procedure succeeds, create the fixed provisioning
+   marker as `hexstrike` with mode `0600`. Socket availability alone does not prove
+   identity provisioning.
+5. Run the identity-agent readiness checks. Stop for any missing unit, inactive
+   service, absent or wrong-type socket, ownership/access mismatch, missing
+   provisioning marker, or configuration path mismatch.
+6. Start `hexstrike-t3-poc.service` only after the identity-agent checks pass, then run
+   the complete PoC readiness verifier. Stopping HexStrike also stops the PartOf agent
+   unit and removes its runtime state.
+
+The corresponding manual systemd preparation sequence is:
+
 ```bash
-if test -f /etc/hexstrike/t3c-runtime.json; then sudo cp -a /etc/hexstrike/t3c-runtime.json /etc/hexstrike/t3c-runtime.json.bak.<RUN_ID>; fi
-sudo install -o root -g hexstrike -m 0640 <PREPARED_HEXSTRIKE_T3C_CONFIG> /etc/hexstrike/t3c-runtime.json
+cd /home/kali/agent-eval-harness
+systemd-analyze verify config/systemd/hexstrike-t3-ssh-agent.service \
+  config/systemd/hexstrike-t3-poc.service
+sudo install -o root -g root -m 0644 \
+  config/systemd/hexstrike-t3-ssh-agent.service \
+  /etc/systemd/system/hexstrike-t3-ssh-agent.service
+sudo install -o root -g root -m 0644 \
+  config/systemd/hexstrike-t3-poc.service \
+  /etc/systemd/system/hexstrike-t3-poc.service
+sudo systemctl daemon-reload
+systemctl cat hexstrike-t3-ssh-agent.service
+systemctl cat hexstrike-t3-poc.service
+sudo systemctl start hexstrike-t3-ssh-agent.service
+systemctl is-active hexstrike-t3-ssh-agent.service
+sudo -u hexstrike test -S /run/hexstrike-t3-ssh-agent/agent.sock
+```
+
+At this point the agent may be empty. Complete the separately approved protected
+identity-provisioning procedure without placing key material in command arguments or
+logs. Only after that procedure confirms success, create the runtime-scoped completion
+marker and verify its metadata:
+
+```bash
+sudo -u hexstrike install -m 0600 /dev/null \
+  /run/hexstrike-t3-ssh-agent/identity-provisioned
+sudo stat -c '%U:%G %a %F' \
+  /run/hexstrike-t3-ssh-agent/agent.sock \
+  /run/hexstrike-t3-ssh-agent/identity-provisioned
+```
+
+Do not create the marker merely because the socket exists. Stop the agent unit to
+remove the runtime directory, socket, and marker if provisioning fails. Do not start
+HexStrike until all agent metadata and provisioning checks pass.
+
+The protected credential map and T3-C runtime must both use the exact repository
+socket contract. There is no fallback to a private-key reference or another assurance
+profile.
+
+Prepare protected replacements outside the repositories. Do not edit a template in
+place or place protected values in shell arguments. Every installed HexStrike JSON file
+below must be `root:hexstrike 0640`.
+
+Establish and validate the containing directory and file metadata without changing
+file contents:
+
+```bash
+cd /home/kali/agent-eval-harness
+sudo scripts/setup_t3_poc_config_permissions.sh --apply
+sudo scripts/setup_t3_poc_config_permissions.sh --check
+```
+
+For a foreground diagnostic start as the dedicated non-root account, use:
+
+```bash
+sudo -u hexstrike env -i HOME=/var/lib/hexstrike \
+  HEXSTRIKE_ASSURANCE_PROFILE=poc HEXSTRIKE_HOST=127.0.0.1 HEXSTRIKE_PORT=8888 \
+  HEXSTRIKE_T3_REACHABILITY_CONFIG=/etc/hexstrike/t3-reachability.json \
+  /home/kali/hexstrike-ai/hexstrike-env/bin/python3 \
+  /home/kali/hexstrike-ai/hexstrike_server.py
+```
+
+Verify the fixed HTTP boundary:
+
+```bash
+curl --fail-with-body --silent --show-error \
+  -H 'Content-Type: application/json' \
+  --data '{"action_id":"t3a.ssh22_reachability.v1","asset_id":"asset:winsrv2025-01"}' \
+  http://127.0.0.1:8888/api/v1/t3/ssh-reachability
+```
+
+Then produce the canonical Harness state once:
+
+```bash
+cd /home/kali/agent-eval-harness
+.venv/bin/harness t3-state --asset-id asset:winsrv2025-01 \
+  --assets config/local/assets.yaml --profiles profiles.yaml \
+  --policy config/local/policy.yaml \
+  --runs-root runs --kill-switch-file config/local/KILL --confirm-lab-probe
+```
+
+The five files form one contract:
+
+- `asset_id` is exactly `asset:winsrv2025-01` everywhere it appears;
+- the target in `t3-reachability.json`, its `/32` in `job-targets.json`, the target
+  used to derive `t3-poc-runtime.json.target_binding`, and the T3-C/Harness targets
+  identify the same approved asset;
+- `port` is exactly integer `22`, and the target-binding digest covers the fixed asset,
+  target, and port with the repository's `target_binding` algorithm;
+- `assurance_profile` is explicitly `poc` in both PoC runtime files and the Harness PoC
+  runtime; no profile fallback is permitted;
+- `credential:ssh-winsrv2025-01`, the credential-map key, and Harness credential
+  references identify the same approved credential;
+- username and identity-agent references in the credential map and T3-C runtime refer
+  to the same low-privilege identity; they are protected values, not HTTP parameters;
+- the pinned host key in the common runtime and the pinned known-hosts source used by
+  T3-C represent the same independently verified host identity; the referenced
+  known-hosts file must also be `root:hexstrike 0640`;
+- T3-A is one session with its fixed three actions; T3-B is five commands, one session,
+  15 seconds per command and 60 seconds total; T3-C is six calls and 60 seconds total;
+- T3-C scenario, marker path, content digest, cleanup, rollback verification, and
+  isolated-lab assertion exactly match the fixed loader contract.
+
+Back up existing files without printing their contents, then install all five:
+
+```bash
+for name in t3-reachability.json t3-poc-runtime.json job-targets.json t3a-credentials.json t3c-runtime.json; do
+  if sudo test -f "/etc/hexstrike/$name"; then
+    sudo cp -a "/etc/hexstrike/$name" "/etc/hexstrike/$name.bak.<RUN_ID>"
+  fi
+done
+sudo install -o root -g hexstrike -m 0640 <PREPARED_T3_REACHABILITY_CONFIG> /etc/hexstrike/t3-reachability.json
+sudo install -o root -g hexstrike -m 0640 <PREPARED_T3_POC_RUNTIME_CONFIG> /etc/hexstrike/t3-poc-runtime.json
+sudo install -o root -g hexstrike -m 0640 <PREPARED_JOB_TARGETS_CONFIG> /etc/hexstrike/job-targets.json
+sudo install -o root -g hexstrike -m 0640 <PREPARED_T3A_CREDENTIALS_CONFIG> /etc/hexstrike/t3a-credentials.json
+sudo install -o root -g hexstrike -m 0640 <PREPARED_T3C_RUNTIME_CONFIG> /etc/hexstrike/t3c-runtime.json
 sudo install -o root -g root -m 0600 <PREPARED_HARNESS_T3C_CONFIG> <PROTECTED_HARNESS_T3C_CONFIG>
+sudo stat -c '%U:%G %a %n' /etc/hexstrike/t3-reachability.json /etc/hexstrike/t3-poc-runtime.json /etc/hexstrike/job-targets.json /etc/hexstrike/t3a-credentials.json /etc/hexstrike/t3c-runtime.json
 systemctl cat hexstrike-t3-poc.service
 sudo systemctl start hexstrike-t3-poc.service
 systemctl status --no-pager hexstrike-t3-poc.service
