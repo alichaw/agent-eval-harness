@@ -1,7 +1,7 @@
 # T3-A authorized credential access
 
 T3-A has two explicit bounded-access intents. They share the same fixed command,
-transport, approval, kill-switch, cleanup, and redaction controls, but have
+transport, policy, kill-switch, cleanup, and redaction controls, but have
 different prerequisite semantics.
 
 `t3-access-bounded` is vulnerability-driven `initial_access`. It requires a
@@ -28,7 +28,7 @@ Authorized-access readiness additionally verifies:
 - an isolated-lab host using `windows_openssh` on SSH port 22;
 - exact equality between registered and private-runtime credential references;
 - a valid pinned Ed25519 host key;
-- the approval-required profile and default-deny target/capability/stage policy;
+- the non-approval profile and default-deny target/capability/stage policy;
 - only `current_identity`, `host_identity`, and `privilege_context`;
 - SSH evidence no older than 24 hours and not dated in the future.
 
@@ -39,5 +39,5 @@ must continue to retain real written authorization outside the repository as
 described in `authorizations/README.md`.
 
 Readiness is offline: it does not read the private key, resolve a credential, or
-open a transport. Approval remains short-lived and single-use. Execution remains
-disabled unless `T3_LAB_EXECUTION_ENABLED` is exactly `true`.
+open a transport. T3-A has no Authorization or human permit. Execution remains disabled
+unless `T3_LAB_EXECUTION_ENABLED` is exactly `true` and all protected boundaries pass.

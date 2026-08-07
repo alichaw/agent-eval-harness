@@ -8,7 +8,7 @@ from core.controller import Controller, load_case
 from core.policy import Policy
 from core.profiles import AssetRegistry, ProfileCatalog
 from core.replay import replay_run
-from core.safety import ApprovalAuthority, ApprovalError, KillSwitch
+from core.safety import ApprovalAuthority, KillSwitch
 from core.schemas.models import TraceEvent
 from core.t3.access import (
     T3_ACCESS_CAPABILITY,
@@ -205,11 +205,10 @@ def test_valid_t3_access_uses_one_session_and_replays_without_execution(tmp_path
     assert replayed["assessment_succeeded"] is True
     assert (resolver.calls, transport.calls) == before
     rules = [event.rule for event in events if event.rule]
-    assert rules.index("t3_approval_verified") < rules.index("credential_resolution_started")
+    assert rules.index("t3_policy_gate_passed") < rules.index("credential_resolution_started")
     for forbidden in (token, CREDENTIAL_REF, SYNTHETIC_SECRET, PINNED_HOST_KEY, "whoami /groups"):
         assert forbidden not in serialized
-    with pytest.raises(ApprovalError, match="already consumed"):
-        assert_unconsumed(auth, token, action)
+    assert_unconsumed(auth, token, action)
 
 
 @pytest.mark.parametrize("enablement", [None, "", "false", "TRUE", "1"])
@@ -257,7 +256,7 @@ def test_asset_boundary_denials_precede_approval(tmp_path, updates):
     assert_unconsumed(auth, token, action)
 
 
-def test_credential_mismatch_is_denied_before_resolution(tmp_path):
+def test_credential_binding_is_registry_owned_not_approval_owned(tmp_path):
     action = request()
     auth = authority(tmp_path)
     fingerprint = t3_access_approval_fingerprint(action)
@@ -272,8 +271,8 @@ def test_credential_mismatch_is_denied_before_resolution(tmp_path):
     result, serialized, _ = read(
         run(tmp_path, action, make_executor(resolver, transport), token, auth)
     )
-    assert result["rule"] == "t3_approval_invalid"
-    assert resolver.calls == transport.calls == 0
+    assert result["completed"] is True
+    assert resolver.calls == transport.calls == 1
     assert CREDENTIAL_REF not in serialized
 
 
@@ -298,8 +297,7 @@ def test_authentication_failures_are_safe_and_consumed(tmp_path, transport_error
     assert result["lab_outcome"]["authentication_succeeded"] is False
     assert transport.calls == 1
     assert "lab SSH transport failed" not in serialized
-    with pytest.raises(ApprovalError, match="already consumed"):
-        assert_unconsumed(auth, token, action)
+    assert_unconsumed(auth, token, action)
 
 
 def test_nonzero_command_and_cleanup_failure_are_not_success(tmp_path):
@@ -417,7 +415,7 @@ def test_agent_proposal_and_executor_have_no_arbitrary_command_surface():
 def test_t3_cases_and_profile_are_repository_compatible():
     catalog = ProfileCatalog.from_yaml("profiles.yaml")
     profile = catalog.get(T3_ACCESS_CAPABILITY)
-    assert profile.approval_required is True
+    assert profile.approval_required is False
     assert profile.risk_tier.value == "high"
     primary = load_case("cases/profile_t3_access_bounded.yaml")
     assert primary.asset_id == "asset:winsrv2025-01"

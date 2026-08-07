@@ -1,0 +1,35 @@
+capabilities:
+  network.service_discovery:
+    route: hexstrike
+    tool: nmap
+    profile_id: agent-service-discovery-low
+    phase: t1
+    risk_tier: low
+    approval_required: false
+  ssh.posture_check:
+    route: hexstrike
+    tool: ssh-posture
+    profile_id: ssh-posture-assessment
+    phase: t2
+    risk_tier: medium
+    approval_required: false
+  rdp.posture_check:
+    route: hexstrike
+    tool: rdp-posture
+    profile_id: rdp-posture-assessment
+    phase: t2
+    risk_tier: medium
+    approval_required: false
+  smb.posture_check:
+    route: hexstrike
+    tool: smb-posture
+    profile_id: smb-posture-assessment
+    phase: t2
+    risk_tier: medium
+    approval_required: false
+  host.controlled_remote_action:
+    route: t3_controller
+    canonical_action: t3-authorized-access-bounded
+    phase: t3a
+    risk_tier: high
+    approval_required: false

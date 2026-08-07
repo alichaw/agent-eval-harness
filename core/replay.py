@@ -243,18 +243,22 @@ def replay_run(run_dir: str | Path) -> dict:
         "integrity": "legacy" if legacy else "verified_chain",
     }
     if t3_access:
-        approval = bool({"t3_approval_verified", "t3b_approval_consumed"} & rules)
+        policy_gate = bool(
+            {"t3_policy_gate_passed", "t3b_policy_gate_passed"} & rules
+            or {"t3_approval_verified", "t3b_approval_consumed"} & rules
+        )
         authenticated = "authentication_succeeded" in rules
         closed = "session_closed" in rules
         invalidated = "credential_lease_invalidated" in rules
         cleanup = closed and invalidated and "cleanup_failed" not in rules
         stopped = "kill_switch_activated" in rules
-        assessment = completed and approval and authenticated and cleanup and not stopped
+        assessment = completed and policy_gate and authenticated and cleanup and not stopped
         result.update(
             {
                 "completed": assessment,
                 "assessment_succeeded": assessment,
-                "approval_succeeded": approval,
+                "approval_succeeded": False,
+                "policy_gate_succeeded": policy_gate,
                 "authentication_succeeded": authenticated,
                 "commands_attempted": len(
                     [

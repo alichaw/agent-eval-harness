@@ -155,7 +155,7 @@ class Policy:
             return PolicyDecision(Verdict.DENY, "evaluation_error", str(e))
 
     def check_t3(self, req: T3PolicyRequest) -> PolicyDecision:
-        """Authorize one registry-resolved T3 target, defaulting to deny."""
+        """Gate one registry-resolved T3 action; only T3-C needs approval."""
 
         try:
             if self._target_denied(req.target):
@@ -166,7 +166,9 @@ class Policy:
                 return PolicyDecision(Verdict.DENY, "t3_capability_not_allowed")
             if req.stage not in self.t3_allowed_stages:
                 return PolicyDecision(Verdict.DENY, "t3_stage_not_allowed")
-            return PolicyDecision(Verdict.REQUIRE_APPROVAL, "t3_requires_approval")
+            if req.stage == "controlled_impact":
+                return PolicyDecision(Verdict.REQUIRE_APPROVAL, "t3c_requires_approval")
+            return PolicyDecision(Verdict.ALLOW, "t3_policy_allowed")
         except Exception:  # noqa: BLE001 - policy evaluation must fail closed
             return PolicyDecision(Verdict.DENY, "evaluation_error")
 

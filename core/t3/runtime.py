@@ -161,7 +161,7 @@ def compose_t3_runtime(
     if (
         profile.profile_id not in {T3_ACCESS_PROFILE, T3_AUTHORIZED_ACCESS_PROFILE}
         or profile.tool_id != "t3-controlled-access"
-        or not profile.approval_required
+        or profile.approval_required
     ):
         raise ValueError("T3-A profile is not safely configured")
     policy = Policy.from_yaml(policy_path)
@@ -185,8 +185,8 @@ def compose_t3_runtime(
             target=target.strip(),
         )
     )
-    if decision.verdict is not Verdict.REQUIRE_APPROVAL:
-        raise ValueError("T3-A policy authorization denied")
+    if decision.verdict is not Verdict.ALLOW:
+        raise ValueError("T3-A policy denied")
     gate = validate_t3_prerequisites(request, state, composed_assets)
     if gate.denied:
         raise ValueError("T3-A prerequisite validation denied")
@@ -243,7 +243,7 @@ def build_t3_controller_and_executor(
     *,
     composition: T3RuntimeComposition,
     runs_root: str | Path,
-    approval_authority: ApprovalAuthority,
+    approval_authority: ApprovalAuthority | None,
     kill_switch_path: str | Path,
     enablement: str | None,
 ):

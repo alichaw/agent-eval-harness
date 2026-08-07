@@ -39,7 +39,7 @@ unreadable, malformed, wrong-owner, wrong-group, or wrong-mode files fail closed
 a sanitized filename and expected-metadata diagnostic.
 
 PoC T3-A/T3-B action configuration is loaded lazily after request-scope and
-authorization validation. Missing unrelated action configuration therefore cannot
+policy validation. Missing unrelated action configuration therefore cannot
 prevent the fixed reachability route from starting, while action execution remains
 fail closed.
 
@@ -73,5 +73,5 @@ After a completed state run, `harness t3-ready` performs offline composition and
 validates that the configured HexStrike URL is exactly `http://127.0.0.1:8888`.
 It does not require or contact a running listener. The separate privileged
 readiness verifier is responsible for observing the listener immediately before a
-real run. `harness t3-scope` prints the canonical, unsigned approval scope and does
-not require `HARNESS_APPROVAL_SECRET` or create an approval token.
+real run. `harness t3-scope` prints the canonical protected execution scope. T3-A/T3-B
+do not require `HARNESS_APPROVAL_SECRET` or create a human approval token.

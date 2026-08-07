@@ -148,6 +148,9 @@ class TraceEvent(BaseModel):
     assurance_profile: str | None = None
     assurance_config_source: str | None = None
     readiness_status: str | None = None
+    job_id: str | None = None
+    job_status: str | None = None
+    diagnostic_output: str | None = Field(default=None, max_length=2000)
 
 
 # ---------------------------------------------------------------------------

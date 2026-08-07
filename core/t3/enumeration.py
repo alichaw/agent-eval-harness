@@ -1,4 +1,4 @@
-"""T3-B: approved immutable, read-only Windows enumeration.
+"""T3-B: policy-gated immutable, read-only Windows enumeration.
 
 The agent-facing model contains identifiers only.  Executable programs and all
 transport details remain in this trusted module/operator configuration.
@@ -255,7 +255,6 @@ def load_t3a_prerequisite(
     outcome = result.get("lab_outcome") or {}
     if (
         result.get("status") != "completed"
-        or result.get("approval_consumed") is not True
         or result.get("real_action_performed") is not True
         or outcome.get("completed") is not True
         or outcome.get("assessment_succeeded") is not True
@@ -922,7 +921,7 @@ def run_t3b(
     redactor: Redactor | None = None,
     assurance: AssuranceContext | None = None,
 ) -> Path:
-    """Consume a T3-B-only approval, run once, and persist bounded evidence."""
+    """Run one policy-gated T3-B action and persist bounded evidence."""
     run_id = f"{datetime.now(timezone.utc):%Y%m%d-%H%M%S}-t3b-{time.time_ns()}"
     root = Path(runs_root) / run_id
     root.mkdir(parents=True)
@@ -991,7 +990,7 @@ def run_t3b(
                 ),
             )
     emit("t3a_prerequisite_validated", "allow")
-    emit("t3b_policy_requires_approval", "require_approval")
+    emit("t3b_policy_gate_passed", "allow")
     binding_error = validate_execution_plan(
         plan,
         execution_mode=execution_mode,
@@ -1012,22 +1011,6 @@ def run_t3b(
         (root / "result.json").write_text(json.dumps(result, indent=2))
         ArtifactSealAuthority.from_approval_authority(authority).seal(root)
         return root
-    authority.verify_and_consume(
-        approval_token,
-        plan.asset_id,
-        T3B_PROFILE,
-        plan.bindings.fingerprint,
-        credential_id=plan.credential_ref,
-        action_fingerprint=plan.bindings.fingerprint,
-    )
-    emit("t3b_approval_consumed", "allow")
-    trace.emit(
-        TraceEventType.EXECUTION_STATE,
-        state="approved",
-        approval_fingerprint=plan.bindings.fingerprint,
-        execution_mode=execution_mode.value,
-        runtime_binding_fingerprint=plan.bindings.runtime_binding_fingerprint,
-    )
     outcome = executor.run(plan)
     if outcome.execution_permit_id:
         trace.emit(
@@ -1170,7 +1153,7 @@ def replay_t3b(
     required_order = [
         "t3b_proposal_validated",
         "t3a_prerequisite_validated",
-        "t3b_approval_consumed",
+        "t3b_policy_gate_passed",
         "credential_resolution_started",
         "credential_lease_created",
         "session_requested",

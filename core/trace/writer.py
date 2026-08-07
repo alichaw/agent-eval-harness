@@ -28,6 +28,17 @@ class TraceWriter:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._seq = 0
         self._previous_digest = "0" * 64
+        # A run may create a fresh execution context for every capability while
+        # retaining one append-only trace. Continue the existing hash chain rather
+        # than restarting sequence numbers for each adapter invocation.
+        if self.path.exists():
+            lines = self.path.read_text(encoding="utf-8").splitlines()
+            if lines:
+                last = json.loads(lines[-1])
+                if last.get("run_id") != run_id:
+                    raise ValueError("trace run_id mismatch")
+                self._seq = int(last["seq"]) + 1
+                self._previous_digest = str(last["event_digest"])
 
     def emit(self, type: TraceEventType, **fields) -> int:
         """Build + validate a TraceEvent, append it as one JSONL line, return its seq.

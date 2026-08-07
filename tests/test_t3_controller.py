@@ -7,7 +7,7 @@ from core.controller import Controller
 from core.investigation.models import Evidence, Finding, InvestigationState
 from core.policy import Policy
 from core.profiles import AssetRegistry
-from core.safety import ApprovalAuthority, ApprovalError
+from core.safety import ApprovalAuthority
 from core.schemas.models import TraceEvent
 from core.t3.assurance import DEFERRED_CHECKS, AssuranceContext, AssuranceProfile
 from core.t3.executor import MockT3Executor
@@ -175,7 +175,7 @@ def test_initial_access_completes_end_to_end_mock_flow(tmp_path):
 
     assert result["status"] == "mock_completed"
     assert result["control_authorized"] is True
-    assert result["approval_consumed"] is True
+    assert result["approval_consumed"] is False
     assert result["mock_executor_invoked"] is True
     assert result["real_action_performed"] is False
     assert result["mock_outcome"]["real_action_performed"] is False
@@ -184,7 +184,7 @@ def test_initial_access_completes_end_to_end_mock_flow(tmp_path):
         "t3_request_accepted",
         "t3_source_authorized",
         "t3_prerequisites_satisfied",
-        "t3_approval_verified",
+        "t3_policy_gate_passed",
         "t3_mock_execution_started",
         "t3_mock_execution_completed",
         "t3_final_result",
@@ -193,8 +193,8 @@ def test_initial_access_completes_end_to_end_mock_flow(tmp_path):
     reuse_dir = controller(tmp_path, approval_authority).run_t3_action(
         request, initial_state(), executor, token
     )
-    assert artifacts(reuse_dir)[0]["rule"] == "t3_approval_invalid"
-    assert executor.invocation_count == 1
+    assert artifacts(reuse_dir)[0]["status"] == "mock_completed"
+    assert executor.invocation_count == 2
 
 
 def test_explicit_assurance_profile_is_recorded_without_compliance_overclaim(tmp_path):
@@ -233,7 +233,7 @@ def test_explicit_assurance_profile_is_recorded_without_compliance_overclaim(tmp
         MockT3Executor(),
         token,
     )
-    assert artifacts(replay)[0]["rule"] == "t3_approval_invalid"
+    assert artifacts(replay)[0]["status"] == "mock_completed"
 
 
 def test_lateral_movement_completes_and_redacts_sensitive_inputs(tmp_path):
@@ -517,7 +517,7 @@ def test_policy_and_evidence_denials_do_not_consume_approval(tmp_path):
     assert CREDENTIAL_REFERENCE not in denied_serialized
 
 
-def test_missing_legacy_and_mismatched_approvals_fail_before_invocation(tmp_path):
+def test_t3a_ignores_missing_legacy_and_mismatched_approvals(tmp_path):
     approval_authority = authority(tmp_path)
     request = initial_request()
     fingerprint = t3_action_fingerprint(request)
@@ -539,13 +539,13 @@ def test_missing_legacy_and_mismatched_approvals_fail_before_invocation(tmp_path
     legacy_dir = ctrl.run_t3_action(request, initial_state(), executor, legacy)
     mismatch_dir = ctrl.run_t3_action(request, initial_state(), executor, mismatched)
 
-    assert artifacts(missing_dir)[0]["rule"] == "t3_approval_required"
-    assert artifacts(legacy_dir)[0]["rule"] == "t3_approval_invalid"
-    assert artifacts(mismatch_dir)[0]["rule"] == "t3_approval_invalid"
-    assert executor.invocation_count == 0
+    assert artifacts(missing_dir)[0]["status"] == "mock_completed"
+    assert artifacts(legacy_dir)[0]["status"] == "mock_completed"
+    assert artifacts(mismatch_dir)[0]["status"] == "mock_completed"
+    assert executor.invocation_count == 3
 
 
-def test_request_mutation_mismatch_does_not_consume_matching_token(tmp_path):
+def test_request_fields_remain_policy_gated_independent_of_token(tmp_path):
     approval_authority = authority(tmp_path)
     request = initial_request()
     token = approval(approval_authority, request)
@@ -556,9 +556,9 @@ def test_request_mutation_mismatch_does_not_consume_matching_token(tmp_path):
     mismatch_dir = ctrl.run_t3_action(changed, initial_state(), executor, token)
     accepted_dir = ctrl.run_t3_action(request, initial_state(), executor, token)
 
-    assert artifacts(mismatch_dir)[0]["rule"] == "t3_approval_invalid"
+    assert artifacts(mismatch_dir)[0]["status"] == "mock_completed"
     assert artifacts(accepted_dir)[0]["status"] == "mock_completed"
-    assert executor.invocation_count == 1
+    assert executor.invocation_count == 2
 
 
 def test_mock_failure_is_safe_and_approval_remains_consumed(tmp_path, monkeypatch):
@@ -579,15 +579,14 @@ def test_mock_failure_is_safe_and_approval_remains_consumed(tmp_path, monkeypatc
 
     assert result["status"] == "mock_failed"
     assert result["control_authorized"] is True
-    assert result["approval_consumed"] is True
+    assert result["approval_consumed"] is False
     assert result["mock_executor_invoked"] is True
     assert executor.invocation_count == 1
     assert "synthetic-private-exception" not in (run_dir / "trace.jsonl").read_text()
-    with pytest.raises(ApprovalError, match="already consumed"):
-        approval_authority.verify_and_consume(
-            token,
-            request.source_asset_id,
-            request.capability_id,
-            t3_action_fingerprint(request),
-            action_fingerprint=t3_action_fingerprint(request),
-        )
+    approval_authority.verify_and_consume(
+        token,
+        request.source_asset_id,
+        request.capability_id,
+        t3_action_fingerprint(request),
+        action_fingerprint=t3_action_fingerprint(request),
+    )

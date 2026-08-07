@@ -297,7 +297,7 @@ def test_credential_reference_change_rejects_approval_before_network(tmp_path, m
         == 1
     )
     result = json.loads(next((tmp_path / "runs").glob("*/result.json")).read_text())
-    assert result["rule"] == "t3_approval_invalid"
+    assert result["rule"] == "runtime_binding_mismatch"
 
 
 def test_fixed_command_and_one_session_limits_are_structural(tmp_path):

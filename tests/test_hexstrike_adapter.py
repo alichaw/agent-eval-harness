@@ -563,6 +563,7 @@ def test_cancellable_nuclei_job_uses_only_bounded_structured_fields(tmp_path, mo
     ("tool", "endpoint"),
     [
         ("smb-posture", "/api/jobs/smb-posture"),
+        ("ssh-posture", "/api/jobs/ssh-posture"),
         ("smb-anonymous-access", "/api/jobs/smb-anonymous-access"),
         ("smb-ms17-010-check", "/api/jobs/smb-ms17-010-check"),
         ("rdp-posture", "/api/jobs/rdp-posture"),

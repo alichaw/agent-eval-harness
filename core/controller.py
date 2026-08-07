@@ -556,7 +556,7 @@ class Controller:
                 target=source_target,
             )
         )
-        if source_decision.verdict is not Verdict.REQUIRE_APPROVAL:
+        if source_decision.verdict is not Verdict.ALLOW:
             emit(source_decision.rule, Verdict.DENY.value, "Source policy authorization denied")
             return finish(completed=False, status="denied", rule=source_decision.rule)
         emit("t3_source_authorized", Verdict.ALLOW.value, "Source policy authorization accepted")
@@ -580,7 +580,7 @@ class Controller:
                     target=destination_target,
                 )
             )
-            if destination_decision.verdict is not Verdict.REQUIRE_APPROVAL:
+            if destination_decision.verdict is not Verdict.ALLOW:
                 emit(
                     destination_decision.rule,
                     Verdict.DENY.value,
@@ -625,37 +625,7 @@ class Controller:
         if not action_fingerprint:
             emit("t3_fingerprint_invalid", Verdict.DENY.value, "T3 approval rejected")
             return finish(completed=False, status="denied", rule="t3_fingerprint_invalid")
-        token = self.approval_token if approval_token is None else approval_token
-        if not token or self.approval_authority is None:
-            emit("t3_approval_required", Verdict.DENY.value, "T3 approval required")
-            return finish(completed=False, status="denied", rule="t3_approval_required")
-        if selected_bounded_executor is not None:
-            emit(
-                "t3_approval_required",
-                Verdict.REQUIRE_APPROVAL.value,
-                "T3 action requires bound approval",
-            )
-        try:
-            self.approval_authority.verify_and_consume(
-                token,
-                request.source_asset_id,
-                request.capability_id,
-                action_fingerprint,
-                credential_id=request.credential_ref or "" if bounded_executor else "",
-                action_fingerprint=action_fingerprint,
-            )
-        except Exception:  # noqa: BLE001 - approval details must not escape
-            emit("t3_approval_invalid", Verdict.DENY.value, "T3 approval rejected")
-            return finish(completed=False, status="denied", rule="t3_approval_invalid")
-        emit("t3_approval_verified", Verdict.ALLOW.value, "T3 approval consumed")
-        if selected_bounded_executor is not None:
-            trace.emit(
-                TraceEventType.EXECUTION_STATE,
-                state=ExecutionState.APPROVED.value,
-                approval_fingerprint=action_fingerprint,
-                runtime_binding_fingerprint=t3_runtime_binding_fingerprint,
-                text="T3 approval binding verified",
-            )
+        emit("t3_policy_gate_passed", Verdict.ALLOW.value, "T3-A/B execution admitted")
 
         # I/J/K. Only a narrow immutable plan crosses the selected executor boundary.
         if selected_bounded_executor is not None:
@@ -686,7 +656,7 @@ class Controller:
                     status="failed",
                     rule="t3_session_failed",
                     control_authorized=True,
-                    approval_consumed=True,
+                    approval_consumed=False,
                     executor_invoked=True,
                 )
             for code in access_outcome.trace_codes:
@@ -753,7 +723,7 @@ class Controller:
                 status=access_outcome.status,
                 rule=access_outcome.rule,
                 control_authorized=True,
-                approval_consumed=True,
+                approval_consumed=False,
                 executor_invoked=True,
                 outcome=access_outcome,
             )
@@ -792,7 +762,7 @@ class Controller:
                     status="lab_observation_failed",
                     rule="lab_observation_failed",
                     control_authorized=True,
-                    approval_consumed=True,
+                    approval_consumed=False,
                     executor_invoked=True,
                 )
             for code in lab_outcome.trace_codes:
@@ -807,7 +777,7 @@ class Controller:
                 status=lab_outcome.status,
                 rule=lab_outcome.rule,
                 control_authorized=True,
-                approval_consumed=True,
+                approval_consumed=False,
                 executor_invoked=True,
                 outcome=lab_outcome,
             )
@@ -836,7 +806,7 @@ class Controller:
                 status="mock_failed",
                 rule="t3_mock_execution_failed",
                 control_authorized=True,
-                approval_consumed=True,
+                approval_consumed=False,
                 executor_invoked=True,
             )
 
@@ -851,7 +821,7 @@ class Controller:
             status="mock_completed",
             rule="t3_result_completed",
             control_authorized=True,
-            approval_consumed=True,
+            approval_consumed=False,
             executor_invoked=True,
             outcome=outcome,
         )

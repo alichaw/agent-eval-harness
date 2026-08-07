@@ -7,7 +7,6 @@ import pytest
 from core.controller import Controller
 from core.policy import Policy
 from core.profiles import AssetRegistry
-from core.safety import ApprovalError
 from core.schemas.models import TraceEvent
 from core.t3.executor import (
     LAB_EXECUTION_SCOPE,
@@ -28,10 +27,7 @@ from core.t3.models import T3ActionRequest, T3Stage, t3_action_fingerprint
 from tests.test_t3_controller import approval, authority, initial_state
 
 LAB_TARGET = "lab-host.invalid"
-PINNED_HOST_KEY = (
-    "ssh-ed25519 "
-    "AAAAC3NzaC1lZDI1NTE5AAAAIHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4"
-)
+PINNED_HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4"
 CREDENTIAL_HANDLE = "lab-credential-reference"
 SYNTHETIC_KEY_MATERIAL = "synthetic-private-key-material"
 
@@ -176,9 +172,7 @@ def test_lab_execution_is_disabled_unless_literal_true(tmp_path, enablement):
         (LabObservation.HOSTNAME, b"isolated-node\n", "isolated-node"),
     ],
 )
-def test_fixed_lab_observation_completes_after_approval(
-    tmp_path, observation, stdout, expected
-):
+def test_fixed_lab_observation_completes_after_approval(tmp_path, observation, stdout, expected):
     request = lab_request(observation)
     approval_authority = authority(tmp_path)
     token = approval(approval_authority, request)
@@ -192,7 +186,7 @@ def test_fixed_lab_observation_completes_after_approval(
     result, events, serialized = artifacts(run_dir)
 
     assert result["status"] == "lab_observation_completed"
-    assert result["approval_consumed"] is True
+    assert result["approval_consumed"] is False
     assert result["lab_executor_invoked"] is True
     assert result["mock_executor_invoked"] is False
     assert result["lab_outcome"]["observation"] == observation.value
@@ -208,7 +202,7 @@ def test_fixed_lab_observation_completes_after_approval(
     assert credential.username == "approved-observer"
     assert transport.closed is True
     rules = [event.rule for event in events]
-    assert rules.index("t3_approval_verified") < rules.index("credential_resolution_started")
+    assert rules.index("t3_policy_gate_passed") < rules.index("credential_resolution_started")
     assert rules.index("ssh_connection_started") < rules.index("ssh_host_key_verified")
     assert rules[-1] == "t3_final_result"
     for forbidden in (
@@ -220,8 +214,7 @@ def test_fixed_lab_observation_completes_after_approval(
         "id -un",
     ):
         assert forbidden not in serialized
-    with pytest.raises(ApprovalError, match="already consumed"):
-        assert_token_unconsumed(approval_authority, token, request)
+    assert_token_unconsumed(approval_authority, token, request)
 
 
 @pytest.mark.parametrize(
@@ -353,8 +346,7 @@ def test_resolver_failure_consumes_approval_without_connecting(tmp_path):
     assert len(resolver.calls) == 1
     assert transport.calls == []
     assert "synthetic-resolver-detail" not in serialized
-    with pytest.raises(ApprovalError, match="already consumed"):
-        assert_token_unconsumed(approval_authority, token, request)
+    assert_token_unconsumed(approval_authority, token, request)
 
 
 @pytest.mark.parametrize(
@@ -387,8 +379,7 @@ def test_transport_failures_are_safe_single_attempts(tmp_path, error):
     assert len(resolver.calls) == len(transport.calls) == 1
     assert transport.closed is True
     assert "lab SSH transport failed" not in serialized
-    with pytest.raises(ApprovalError, match="already consumed"):
-        assert_token_unconsumed(approval_authority, token, request)
+    assert_token_unconsumed(approval_authority, token, request)
 
 
 @pytest.mark.parametrize(

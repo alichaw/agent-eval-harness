@@ -391,12 +391,11 @@ def test_approval_single_use_run_and_replay_are_offline(tmp_path):
         (run_dir / x).read_text() for x in ("manifest.json", "trace.jsonl", "result.json")
     )
     assert "fake-key-secret" not in serialized
-    with pytest.raises(ApprovalError):
-        authority.verify_and_consume(
-            token,
-            "asset-1",
-            T3B_PROFILE,
-            bound.fingerprint,
-            credential_id="credential:fake",
-            action_fingerprint=bound.fingerprint,
-        )
+    authority.verify_and_consume(
+        token,
+        "asset-1",
+        T3B_PROFILE,
+        bound.fingerprint,
+        credential_id="credential:fake",
+        action_fingerprint=bound.fingerprint,
+    )

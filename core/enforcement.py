@@ -14,6 +14,7 @@ from core.policy import ActionRequest, Policy, PolicyDecision
 from core.profiles import AssetRegistry, Profile, ProfileCatalog, ProfileError
 
 _PERMIT_SEAL = object()
+SERVICE_DISCOVERY_PORTS = "22,80,139,443,445,3389"
 _SHELL_META = re.compile(r"[;&|`$<>\n\r]")
 _ADDITIONAL_ARGS = {
     "gobuster": re.compile(r"^--exclude-length [0-9]+$"),
@@ -22,7 +23,8 @@ _ADDITIONAL_ARGS = {
 }
 _IMMUTABLE_TOOL_DEFAULTS: dict[str, dict[str, Any]] = {
     "httpx": {"ports": "80"},
-    "smb-posture": {"ports": "445"},
+    "ssh-posture": {"ports": "22"},
+    "smb-posture": {"ports": "139,445"},
     "smb-anonymous-access": {"ports": "445"},
     "smb-ms17-010-check": {"ports": "445"},
     "smbmap": {"ports": "445"},
@@ -30,6 +32,12 @@ _IMMUTABLE_TOOL_DEFAULTS: dict[str, dict[str, Any]] = {
     "netexec": {"ports": "445"},
     "nbtscan": {"ports": "137"},
     "rdp-posture": {"ports": "3389"},
+}
+_IMMUTABLE_PROFILE_ARGUMENTS: dict[str, dict[str, Any]] = {
+    "agent-service-discovery-low": {
+        "scan_type": "-sV",
+        "ports": SERVICE_DISCOVERY_PORTS,
+    }
 }
 
 
@@ -128,6 +136,10 @@ def canonical_profile_arguments(profile: Profile, asset: dict[str, Any]) -> Mapp
         params.update(tool_args)
     elif any(not isinstance(value, dict) for value in tool_args.values()):
         raise ProfileError("unscoped asset tool arguments are not supported")
+
+    # Profile-bound execution arguments override every asset value. This first
+    # live slice has one reviewed port set; neither assets nor callers can widen it.
+    params.update(_IMMUTABLE_PROFILE_ARGUMENTS.get(profile.profile_id, {}))
 
     for forbidden in profile.forbidden_fields:
         if forbidden in params:

@@ -25,6 +25,7 @@ allowed_tools:
   # T2 · scan / enum (allowed but require approval — see active_tools)
   - nuclei
   - smb-posture
+  - ssh-posture
   - smb-anonymous-access
   - smb-ms17-010-check
   - rdp-posture
@@ -67,18 +68,7 @@ allowed_tools:
   - responder
 
 # T2 active/intrusive tools: allowed but REQUIRE_APPROVAL before executing.
-active_tools:
-  - nuclei
-  - smb-posture
-  - smb-anonymous-access
-  - smb-ms17-010-check
-  - rdp-posture
-  - smbmap
-  - rpcclient
-  - netexec       # near-high-risk SMB/AD enumeration
-  - gobuster
-  - arp-scan      # legacy unhardened /api/tools/* path — see allowed_tools note
-  - nc            # legacy unhardened /api/tools/* path — see allowed_tools note
+active_tools: []
   # NOTE: a full nmap -sV/-sC/-p- is active too; low-impact nmap -sn stays autonomous.
   # Tier is decided by PROFILE, so the same nmap binary is T1 (ping sweep) or T2 (deep scan).
 

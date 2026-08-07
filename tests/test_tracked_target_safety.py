@@ -6,8 +6,7 @@ from pathlib import Path
 import yaml
 
 DOCUMENTATION_NETWORKS = tuple(
-    ipaddress.ip_network(value)
-    for value in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")
+    ipaddress.ip_network(value) for value in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")
 )
 IPV4 = re.compile(r"(?<![0-9.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?:/[0-9]{1,2})?(?![0-9.])")
 

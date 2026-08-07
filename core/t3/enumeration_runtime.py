@@ -123,7 +123,7 @@ def compose_t3b_runtime(
     if (
         profile.profile_id != T3B_PROFILE
         or profile.tool_id != "t3-windows-enumeration-readonly"
-        or not profile.approval_required
+        or profile.approval_required
     ):
         raise ValueError("T3-B profile is not safely configured")
     policy = Policy.from_yaml(policy_path)
@@ -134,8 +134,8 @@ def compose_t3b_runtime(
             target=asset["target"],
         )
     )
-    if policy_decision.verdict is not Verdict.REQUIRE_APPROVAL:
-        raise ValueError("T3-B policy authorization denied")
+    if policy_decision.verdict is not Verdict.ALLOW:
+        raise ValueError("T3-B policy denied")
     prerequisite = load_t3a_prerequisite(
         prerequisite_run_dir,
         seal_authority=artifact_authority,

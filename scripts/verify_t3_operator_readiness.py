@@ -561,12 +561,14 @@ def _pinned_host_source_result(value: object, expected_key: object) -> dict[str,
 def _skipped(reason: str = "poc_profile") -> dict[str, str]:
     return {"status": "SKIPPED_BY_PROFILE", "reason": reason}
 
+
 def _kill_switch_inactive(path: Path) -> bool:
     """Return True only when the kill-switch path is confirmed absent."""
     try:
         return not path.exists()
     except OSError:
         return False
+
 
 def _verify_poc(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
     harness = Path(args.harness_root)

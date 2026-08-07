@@ -168,9 +168,7 @@ def produce_ssh_reachability_state(
         and value.get("target", "").strip()
     ]
     if not policy.denied_targets and (
-        assurance_profile != "poc"
-        or policy.default != "deny"
-        or registered_poc_targets != [target]
+        assurance_profile != "poc" or policy.default != "deny" or registered_poc_targets != [target]
     ):
         raise ValueError("operator denied-target CIDRs are required")
     decision = policy.check(ActionRequest(tool=TOOL_ID, target=target))

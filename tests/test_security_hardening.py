@@ -164,6 +164,7 @@ def test_controller_and_executor_share_canonical_arguments(tmp_path):
     catalog, assets, policy = context_files(tmp_path, tool="gobuster")
     asset = assets.resolve("asset:test")
     asset["tool_args"] = {"gobuster": {"additional_args": "--exclude-length 10"}}
+    assets = assets.with_asset_overrides("asset:test", asset)
     controller = Controller(policy=policy, catalog=catalog, assets=assets)
     case = load_case(write_case(tmp_path))
     controller_action = controller._resolve_profile(case)["action"]
@@ -177,7 +178,9 @@ def test_max_ports_and_shell_like_arguments_fail_closed(tmp_path):
     catalog, assets, _policy = context_files(tmp_path, ports="80,443", max_ports=1)
     with pytest.raises(ProfileError, match="max_ports"):
         resolve_effective_action(catalog, assets, "asset:test", "safe-profile")
-    assets.resolve("asset:test")["tool_args"] = {"nmap": {"additional_args": "safe; id"}}
+    assets = assets.with_asset_overrides(
+        "asset:test", {"tool_args": {"nmap": {"additional_args": "safe; id"}}}
+    )
     with pytest.raises(ProfileError):
         resolve_effective_action(catalog, assets, "asset:test", "safe-profile")
 
@@ -191,10 +194,10 @@ def test_active_tool_is_not_cleared_in_profile_mode(tmp_path):
 
 def test_wrong_asset_type_denylist_and_t3_high_requirements_fail_closed(tmp_path):
     catalog, assets, policy = context_files(tmp_path)
-    assets.resolve("asset:test")["asset_type"] = "web_lab"
+    assets = assets.with_asset_overrides("asset:test", {"asset_type": "web_lab"})
     with pytest.raises(ProfileError, match="asset type"):
         resolve_effective_action(catalog, assets, "asset:test", "safe-profile")
-    assets.resolve("asset:test")["asset_type"] = "host"
+    assets = assets.with_asset_overrides("asset:test", {"asset_type": "host"})
     action = resolve_effective_action(catalog, assets, "asset:test", "safe-profile")
     policy.denied_targets = ["192.0.2.10"]
     assert evaluate_effective_action(action, policy).rule == "target_forbidden_zone"

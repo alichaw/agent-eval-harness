@@ -530,14 +530,18 @@ def cmd_t3_run(args) -> int:
 
     composition = _t3_composition(args)
     authority = _approval_authority(args.approval_spent_dir)
-    if authority is None:
-        raise SystemExit("HARNESS_APPROVAL_SECRET is required")
-    token = _read_token_file(args.approval_token_file)
+    token = (
+        _read_token_file(args.approval_token_file)
+        if getattr(args, "approval_token_file", None)
+        else ""
+    )
     if args.profile_id == "windows-host-enumeration-readonly":
         from core.safety import KillSwitch
         from core.t3.enumeration_runtime import execute_t3b_composition
         from core.t3.runtime import T3_ENABLEMENT_ENV
 
+        if authority is None:
+            raise SystemExit("HARNESS_APPROVAL_SECRET is required only for artifact sealing")
         if os.environ.get(T3_ENABLEMENT_ENV) != "true":
             raise SystemExit("T3-B lab execution is disabled")
         run_dir = execute_t3b_composition(
@@ -797,6 +801,179 @@ def main(argv: list[str] | None = None) -> int:
     p_replay.add_argument("run_dir", help="path to runs/<run_id>")
     p_replay.set_defaults(func=cmd_replay)
 
+    def cmd_agent_demo(args) -> int:
+        from core.orchestration.demo import run_demo
+        from core.orchestration.planner import (
+            DeterministicPlanner,
+            OllamaPlanner,
+            OllamaPlannerError,
+        )
+
+        try:
+            planner = OllamaPlanner() if args.planner == "ollama" else DeterministicPlanner()
+        except OllamaPlannerError as exc:
+            raise SystemExit(str(exc)) from None
+        print(
+            json.dumps(
+                run_demo(args.fixture, planner=planner, asset_id=args.asset_id, task=args.task),
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    def cmd_ollama_check(args) -> int:
+        from core.orchestration.planner import OllamaPlanner, OllamaPlannerError
+
+        try:
+            planner = OllamaPlanner()
+            decision = planner.check()
+        except OllamaPlannerError as exc:
+            raise SystemExit(str(exc)) from None
+        print(
+            json.dumps(
+                {
+                    "connected": True,
+                    "model": planner.model,
+                    "schema_conforming_decision": decision.model_dump(exclude_none=True),
+                    "complete_agent_test": False,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    def cmd_agent_run(args) -> int:
+        import time
+
+        from core.orchestration.catalog import CapabilityCatalog
+        from core.orchestration.live import LiveHexStrikeExecutor
+        from core.orchestration.models import RunStatus
+        from core.orchestration.orchestrator import Orchestrator
+        from core.orchestration.planner import OllamaPlanner, OllamaPlannerError
+        from core.policy import Policy
+        from core.profiles import AssetRegistry, ProfileCatalog
+        from core.safety import KillSwitch
+
+        if args.executor != "hexstrike" or args.planner != "ollama":
+            raise SystemExit("the first live slice requires --planner ollama --executor hexstrike")
+        token = _read_token_file(args.job_create_token_file, "job create token")
+        try:
+            profiles = ProfileCatalog.from_yaml(args.profiles)
+            full_catalog = CapabilityCatalog.from_yaml(args.capabilities, profiles)
+            catalog = CapabilityCatalog(
+                {
+                    capability_id: full_catalog.get(capability_id)
+                    for capability_id in (
+                        "network.service_discovery",
+                        "ssh.posture_check",
+                        "rdp.posture_check",
+                        "smb.posture_check",
+                    )
+                }
+            )
+            assets = AssetRegistry.from_yaml(args.assets)
+            policy = Policy.from_yaml(args.policy)
+            planner = OllamaPlanner()
+            executor = LiveHexStrikeExecutor(
+                profiles=profiles,
+                assets=assets,
+                policy=policy,
+                job_create_token=token,
+                kill_switch=KillSwitch(Path(args.kill_switch_file)),
+                runs_root=args.runs_root,
+                base_url=os.environ.get("HEXSTRIKE_BASE_URL", "http://127.0.0.1:8888"),
+                timeout_seconds=int(os.environ.get("HEXSTRIKE_TIMEOUT_SECONDS", "90")),
+            )
+        except (OSError, ValueError, OllamaPlannerError) as exc:
+            raise SystemExit(str(exc)) from None
+        if not executor.health():
+            raise SystemExit("HexStrike health check failed at http://127.0.0.1:8888/health")
+
+        run_id = f"agent-live-{time.time_ns()}"
+        audit_events: list[dict[str, object]] = []
+        orchestrator = Orchestrator(
+            catalog=catalog,
+            profiles=profiles,
+            assets=assets,
+            policy=policy,
+            planner=planner,
+            executor=executor,
+            kill_switch=KillSwitch(Path(args.kill_switch_file)).engaged,
+            audit=audit_events.append,
+        )
+        run = orchestrator.start(
+            run_id=run_id,
+            principal="local-operator",
+            asset_id=args.asset_id,
+            task=args.task,
+        )
+        for _ in range(orchestrator.budgets.max_steps):
+            run = orchestrator.advance(run)
+            if run.status is not RunStatus.RUNNING:
+                break
+        if run.status is RunStatus.SUCCEEDED and run.failed:
+            run.status = RunStatus.COMPLETED_WITH_FAILURES
+        run_dir = Path(args.runs_root) / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "orchestration-audit.json").write_text(
+            json.dumps(audit_events, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        result = {
+            "live_hexstrike": True,
+            "hexstrike_health": executor.health_succeeded,
+            "run_id": run_id,
+            "run_dir": str(run_dir),
+            "status": run.status.value,
+            "stop_reason": run.stop_reason,
+            "capability_sequence": run.executed,
+            "attempted_capability_sequence": run.planned,
+            "failed_capability_sequence": run.failed,
+            "job_id": executor.last_job_id,
+            "job_status": executor.last_job_status,
+            "job_state_sequence": executor.job_states,
+            "executor_error": executor.last_error,
+            "executions": executor.executions,
+            "evidence_ids": [item for obs in run.observations for item in obs.evidence_ids],
+            "observations": [item.model_dump(mode="json") for item in run.observations],
+            "trace_path": executor.last_trace_path,
+        }
+        (run_dir / "orchestration-result.json").write_text(
+            json.dumps(result, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if run.status is RunStatus.SUCCEEDED and run.executed else 1
+
+    p_agent_demo = sub.add_parser(
+        "agent-demo", help="run the policy path against deterministic offline fixtures"
+    )
+    p_agent_demo.add_argument("--fixture", choices=("windows", "web-only"), required=True)
+    p_agent_demo.add_argument(
+        "--planner", choices=("deterministic", "ollama"), default="deterministic"
+    )
+    p_agent_demo.add_argument("--executor", choices=("fixture",), default="fixture")
+    p_agent_demo.add_argument("--asset-id", default="asset:offline-demo")
+    p_agent_demo.add_argument("--task", default="Assess the approved offline fixture")
+    p_agent_demo.set_defaults(func=cmd_agent_demo)
+
+    p_ollama_check = sub.add_parser("ollama-check", help="check Ollama and planner schema only")
+    p_ollama_check.set_defaults(func=cmd_ollama_check)
+
+    p_agent_run = sub.add_parser("agent-run", help="run the first live HexStrike slice")
+    p_agent_run.add_argument("--planner", choices=("ollama",), required=True)
+    p_agent_run.add_argument("--executor", choices=("hexstrike",), required=True)
+    p_agent_run.add_argument("--asset-id", required=True)
+    p_agent_run.add_argument("--task", required=True)
+    p_agent_run.add_argument("--assets", default="config/local/assets.yaml")
+    p_agent_run.add_argument("--profiles", default="profiles.yaml")
+    p_agent_run.add_argument("--policy", default="config/local/policy.yaml")
+    p_agent_run.add_argument("--capabilities", default="capabilities.yaml")
+    p_agent_run.add_argument("--job-create-token-file", default="config/local/job-create.token")
+    p_agent_run.add_argument("--kill-switch-file", default="config/local/KILL")
+    p_agent_run.add_argument("--runs-root", default="runs")
+    p_agent_run.set_defaults(func=cmd_agent_run)
+
     p_t3_state = sub.add_parser(
         "t3-state",
         help="produce canonical Windows TCP/22 reachability investigation state",
@@ -847,7 +1024,10 @@ def main(argv: list[str] | None = None) -> int:
         help="run one approved bounded T3-A SSH assessment",
     )
     _add_t3_proposal_arguments(p_t3_run)
-    p_t3_run.add_argument("--approval-token-file", required=True)
+    p_t3_run.add_argument(
+        "--approval-token-file",
+        help="deprecated and ignored for T3-A/T3-B; retained for CLI compatibility",
+    )
     p_t3_run.add_argument("--runs-root", default="runs")
     p_t3_run.add_argument("--kill-switch-file", default="config/local/KILL")
     p_t3_run.set_defaults(func=cmd_t3_run)
