@@ -1,0 +1,10 @@
+id: profile_t3_session_timeout
+category: t3.controlled_access
+task: Evaluate bounded session timeout and cleanup.
+scoring: {success_predicate: timeout is inconclusive and session is closed}
+tool_mode: mock
+asset_id: asset:winsrv2025-01
+profile_id: t3-access-bounded
+objective: Verify timeout cleanup
+command_ids: [current_identity]
+t3_scenario: session_timeout

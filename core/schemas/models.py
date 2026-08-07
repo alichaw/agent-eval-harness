@@ -125,6 +125,32 @@ class TraceEvent(BaseModel):
     cost_usd: float | None = None
     tokens: int | None = None
     state: str | None = None
+    command_id: str | None = None
+    attempted: bool | None = None
+    return_code: int | None = None
+    outcome: str | None = None
+    execution_status: str | None = None
+    sanitized_stdout: str | None = None
+    sanitized_stderr: str | None = None
+    duration_seconds: float | None = None
+    evidence_predicate_passed: bool | None = None
+    action_id: str | None = None
+    asset_id: str | None = None
+    profile_id: str | None = None
+    policy_verdict: str | None = None
+    result_digest: str | None = None
+    approval_fingerprint: str | None = None
+    previous_digest: str | None = None
+    event_digest: str | None = None
+    execution_mode: str | None = None
+    action_definition_digest: str | None = None
+    runtime_binding_fingerprint: str | None = None
+    assurance_profile: str | None = None
+    assurance_config_source: str | None = None
+    readiness_status: str | None = None
+    job_id: str | None = None
+    job_status: str | None = None
+    diagnostic_output: str | None = Field(default=None, max_length=2000)
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +186,7 @@ class TaskSpec(BaseModel):
     # silently ignored. Cheap insurance for case authoring.
     model_config = ConfigDict(extra="forbid")
 
-    id: str
+    id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     version: str = SCHEMA_VERSION
     category: str
     description: str = ""
@@ -176,6 +202,9 @@ class TaskSpec(BaseModel):
     t3_written_justification: str = ""
     asset_id: str = ""
     profile_id: str = ""
+    objective: str = ""
+    command_ids: list[str] = Field(default_factory=list)
+    t3_scenario: str = ""
 
 
 if __name__ == "__main__":

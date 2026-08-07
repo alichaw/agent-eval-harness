@@ -31,6 +31,12 @@ class Evidence(BaseModel):
     complete: bool
     truncated: bool = False
     error: str | None = None
+    run_id: str | None = None
+    action_id: str | None = None
+    profile_id: str | None = None
+    policy_verdict: str | None = None
+    result_digest: str | None = None
+    verified: bool = False
 
 
 class Finding(BaseModel):

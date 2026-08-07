@@ -80,6 +80,8 @@ def _default_script(task: TaskSpec) -> MockScript:
 
 class MockAgent(AgentAdapter):
     name = "mock"
+    execution_capable = False
+    requires_authoritative_context = False
 
     def __init__(self, scripts: dict[str, MockScript] | None = None):
         # Configurable: pass your own scripts, or override individual built-ins.

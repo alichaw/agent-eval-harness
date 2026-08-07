@@ -1,0 +1,12 @@
+{
+  "asset_id": "asset:example-windows-lab",
+  "profile_id": "t3-authorized-access-bounded",
+  "credential_ref": "credential:example-windows-lab",
+  "username": "example-low-privilege-principal",
+  "private_key_path": "OPERATOR_LOCAL_CONFIGURATION_REQUIRED",
+  "pinned_host_key": "OPERATOR_PINNED_ED25519_HOST_KEY_REQUIRED",
+  "hexstrike_url": "http://127.0.0.1:8888",
+  "assurance": {
+    "profile": "hardened"
+  }
+}

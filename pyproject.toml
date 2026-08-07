@@ -9,6 +9,7 @@ description = "Adapter-based, reproducible, auditable evaluation harness for aut
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "paramiko>=3.4,<5",
     "pydantic>=2.6",
     "pyyaml>=6.0",
     "requests>=2.31",
@@ -48,3 +49,4 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 # start lenient; tighten (e.g. disallow_untyped_defs) once the codebase settles
 ignore_missing_imports = true
+explicit_package_bases = true

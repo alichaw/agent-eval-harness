@@ -5,5 +5,5 @@ description: Approval-gated AD posture check over a null SMB session (shares, pa
 task: "Assess AD posture over a null SMB session on the authorised lab host."
 scoring: {success_predicate: "profile_executed"}
 tool_mode: real
-asset_id: "asset:vm-lab-01"
+asset_id: "asset:winsrv2025-01"
 profile_id: "ad-null-session-posture"

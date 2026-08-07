@@ -1,0 +1,10 @@
+id: profile_t3_command_failure
+category: t3.controlled_access
+task: Evaluate a failed fixed observation.
+scoring: {success_predicate: command failure is not reported as success}
+tool_mode: mock
+asset_id: asset:winsrv2025-01
+profile_id: t3-access-bounded
+objective: Verify command failure handling
+command_ids: [host_identity]
+t3_scenario: command_failure

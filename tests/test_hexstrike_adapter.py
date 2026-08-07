@@ -8,12 +8,15 @@ actually matter and that W1 taught us the hard way:
   * "Host is up" alone must NOT be treated as success (the -Pn trap)
 """
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
 
 from core.adapters.base import RunContext
 from core.adapters.hexstrike import HexStrikeAdapter
+from core.enforcement import _PERMIT_SEAL, ExecutionPermit
 from core.safety import ExecutionState, KillSwitch
 from core.schemas.models import AgentResult, TaskSpec, TraceEvent, TraceEventType
 from core.trace.writer import TraceWriter
@@ -55,6 +58,33 @@ def _events(p: Path) -> list[TraceEvent]:
     ]
 
 
+def _run(task: TaskSpec, ctx: RunContext) -> AgentResult:
+    params = dict(task.agent_params)
+    tool = params.pop("tool", "nmap")
+    ctx.execution_permit = ExecutionPermit(
+        ctx.run_id,
+        "offline-test-action",
+        "asset:test",
+        "profile:test",
+        tool,
+        task.target,
+        hashlib.sha256(
+            json.dumps(params, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        "offline_test_allow",
+        "offline-test-fingerprint",
+        120,
+        10,
+        _PERMIT_SEAL,
+    )
+    ctx.trace.emit(
+        TraceEventType.POLICY_EVENT,
+        verdict="allow",
+        rule="offline_test_allow",
+    )
+    return HexStrikeAdapter().run(task, ctx)
+
+
 # nmap output where the port is OPEN (target reachable)
 _OPEN = (
     "Nmap scan report for 172.18.0.2\n"
@@ -91,7 +121,7 @@ def _patch_nmap(monkeypatch, stdout, return_code=0, status=200):
 
 def test_open_port_is_completed(tmp_path, monkeypatch, healthy):
     _patch_nmap(monkeypatch, _OPEN)
-    res = HexStrikeAdapter().run(_task(), _ctx(tmp_path))
+    res = _run(_task(), _ctx(tmp_path))
     assert isinstance(res, AgentResult)
     assert res.completed is True
     assert res.tool_calls[0].name == "nmap"
@@ -101,7 +131,7 @@ def test_filtered_port_is_not_completed(tmp_path, monkeypatch, healthy):
     # THE W1 LESSON: "Host is up" is present, but the port is filtered -> blocked.
     # completed must be False; we must not be fooled by the -Pn "Host is up".
     _patch_nmap(monkeypatch, _FILTERED)
-    res = HexStrikeAdapter().run(_task(target="1.1.1.1"), _ctx(tmp_path))
+    res = _run(_task(target="1.1.1.1"), _ctx(tmp_path))
     assert res.completed is False
 
 
@@ -110,7 +140,7 @@ def test_server_down_fails_gracefully(tmp_path, monkeypatch):
         "core.adapters.hexstrike.requests.get",
         lambda *a, **k: _FakeResp({"status": "dead"}, ok=False),
     )
-    res = HexStrikeAdapter().run(_task(), _ctx(tmp_path))
+    res = _run(_task(), _ctx(tmp_path))
     assert res.completed is False
     kinds = {e.type for e in _events(tmp_path)}
     assert TraceEventType.ERROR in kinds
@@ -118,7 +148,7 @@ def test_server_down_fails_gracefully(tmp_path, monkeypatch):
 
 def test_trace_is_schema_valid(tmp_path, monkeypatch, healthy):
     _patch_nmap(monkeypatch, _OPEN)
-    HexStrikeAdapter().run(_task(), _ctx(tmp_path))
+    _run(_task(), _ctx(tmp_path))
     events = _events(tmp_path)  # every line must parse
     assert [e.seq for e in events] == list(range(len(events)))  # gapless
     kinds = {e.type for e in events}
@@ -259,7 +289,7 @@ def test_kill_switch_cancels_active_nmap_job(tmp_path, monkeypatch):
     ctx.kill_switch = KillSwitch(kill_file)
     ctx.job_create_token = "create-secret"
 
-    result = HexStrikeAdapter().run(_task(), ctx)
+    result = _run(_task(), ctx)
     states = [
         event.state for event in _events(tmp_path) if event.type is TraceEventType.EXECUTION_STATE
     ]
@@ -305,7 +335,7 @@ def test_cancellable_nmap_job_completes_normally(tmp_path, monkeypatch):
     ctx.kill_switch = KillSwitch(tmp_path / "KILL")
     ctx.job_create_token = "create-secret"
 
-    result = HexStrikeAdapter().run(_task(scan_type="-sn", ports="22,80,443"), ctx)
+    result = _run(_task(scan_type="-sn", ports="22,80,443"), ctx)
 
     assert result.completed is True
     assert "secret-capability" not in (tmp_path / "trace.jsonl").read_text()
@@ -323,7 +353,7 @@ def test_cancellable_job_requires_create_capability(tmp_path, monkeypatch):
     ctx = _ctx(tmp_path)
     ctx.kill_switch = KillSwitch(tmp_path / "KILL")
 
-    result = HexStrikeAdapter().run(_task(), ctx)
+    result = _run(_task(), ctx)
 
     assert result.completed is False
     errors = [event for event in _events(tmp_path) if event.type is TraceEventType.ERROR]
@@ -370,7 +400,7 @@ def test_cancellable_httpx_job_uses_structured_authenticated_request(tmp_path, m
     ctx.kill_switch = KillSwitch(tmp_path / "KILL")
     ctx.job_create_token = "create-secret"
 
-    result = HexStrikeAdapter().run(
+    result = _run(
         _task(
             tool="httpx",
             probe=True,
@@ -433,7 +463,7 @@ def test_cancellable_gobuster_job_converts_only_safe_asset_argument(tmp_path, mo
     ctx.kill_switch = KillSwitch(tmp_path / "KILL")
     ctx.job_create_token = "create-secret"
 
-    result = HexStrikeAdapter().run(
+    result = _run(
         _task(
             tool="gobuster",
             mode="dir",
@@ -460,7 +490,7 @@ def test_cancellable_gobuster_rejects_unstructured_asset_arguments(tmp_path, mon
     ctx.kill_switch = KillSwitch(tmp_path / "KILL")
     ctx.job_create_token = "create-secret"
 
-    result = HexStrikeAdapter().run(
+    result = _run(
         _task(tool="gobuster", additional_args="--exclude-length 1; id"),
         ctx,
     )
@@ -509,7 +539,7 @@ def test_cancellable_nuclei_job_uses_only_bounded_structured_fields(tmp_path, mo
     ctx.kill_switch = KillSwitch(tmp_path / "KILL")
     ctx.job_create_token = "create-secret"
 
-    result = HexStrikeAdapter().run(
+    result = _run(
         _task(
             tool="nuclei",
             template_set="baseline-web-v1",
@@ -533,6 +563,7 @@ def test_cancellable_nuclei_job_uses_only_bounded_structured_fields(tmp_path, mo
     ("tool", "endpoint"),
     [
         ("smb-posture", "/api/jobs/smb-posture"),
+        ("ssh-posture", "/api/jobs/ssh-posture"),
         ("smb-anonymous-access", "/api/jobs/smb-anonymous-access"),
         ("smb-ms17-010-check", "/api/jobs/smb-ms17-010-check"),
         ("rdp-posture", "/api/jobs/rdp-posture"),
@@ -575,7 +606,7 @@ def test_cancellable_smb_jobs_send_only_the_authorised_target(
     ctx.kill_switch = KillSwitch(tmp_path / "KILL")
     ctx.job_create_token = "create-secret"
 
-    result = HexStrikeAdapter().run(_task(tool=tool), ctx)
+    result = _run(_task(tool=tool), ctx)
 
     assert result.completed is True
     trace_text = (tmp_path / "trace.jsonl").read_text()
@@ -632,9 +663,7 @@ def test_cancellable_rpcclient_job_sends_target_and_fixed_commands(tmp_path, mon
     ctx.kill_switch = KillSwitch(tmp_path / "KILL")
     ctx.job_create_token = "create-secret"
 
-    result = HexStrikeAdapter().run(
-        _task(tool="rpcclient", commands=["enumdomusers", "enumdomgroups"]), ctx
-    )
+    result = _run(_task(tool="rpcclient", commands=["enumdomusers", "enumdomgroups"]), ctx)
 
     assert result.completed is True
     trace_text = (tmp_path / "trace.jsonl").read_text()
@@ -676,9 +705,7 @@ def test_cancellable_netexec_job_sends_target_and_fixed_checks(tmp_path, monkeyp
     ctx.kill_switch = KillSwitch(tmp_path / "KILL")
     ctx.job_create_token = "create-secret"
 
-    result = HexStrikeAdapter().run(
-        _task(tool="netexec", checks=["shares", "pass-policy", "local-groups"]), ctx
-    )
+    result = _run(_task(tool="netexec", checks=["shares", "pass-policy", "local-groups"]), ctx)
 
     assert result.completed is True
     trace_text = (tmp_path / "trace.jsonl").read_text()

@@ -61,6 +61,15 @@ class ActionRequest:
     t3_written_justification: str = ""  # T3-High only: human-written justification
 
 
+@dataclass(frozen=True)
+class T3PolicyRequest:
+    """Structured T3 authorization input; contains no executable or credential data."""
+
+    capability_id: str
+    stage: str
+    target: str
+
+
 @dataclass
 class Policy:
     default: str = "deny"
@@ -74,6 +83,11 @@ class Policy:
     t3_high_tools: list[str] = field(default_factory=list)
     t3_low_delay_seconds: int = 900  # 15 min default
     t3_high_delay_seconds: int = 3600  # 1 hour default
+    t3_allowed_capabilities: list[str] = field(default_factory=list)
+    t3_allowed_stages: list[str] = field(default_factory=list)
+    t3_prerequisite_max_age_seconds: int = 3600
+    t3_prerequisite_clock_skew_seconds: int = 30
+    t3_require_credential_invalidation: bool = True
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> Policy:
@@ -103,6 +117,11 @@ class Policy:
             t3_high_tools=t3_high_tools,
             t3_low_delay_seconds=t3_low_delay,
             t3_high_delay_seconds=t3_high_delay,
+            t3_allowed_capabilities=data.get("t3_allowed_capabilities", []),
+            t3_allowed_stages=data.get("t3_allowed_stages", []),
+            t3_prerequisite_max_age_seconds=data.get("t3_prerequisite_max_age_seconds", 3600),
+            t3_prerequisite_clock_skew_seconds=data.get("t3_prerequisite_clock_skew_seconds", 30),
+            t3_require_credential_invalidation=data.get("t3_require_credential_invalidation", True),
         )
 
     @staticmethod
@@ -134,6 +153,24 @@ class Policy:
             return self._check(req)
         except Exception as e:  # noqa: BLE001 — deliberate: unknown error must deny
             return PolicyDecision(Verdict.DENY, "evaluation_error", str(e))
+
+    def check_t3(self, req: T3PolicyRequest) -> PolicyDecision:
+        """Gate one registry-resolved T3 action; only T3-C needs approval."""
+
+        try:
+            if self._target_denied(req.target):
+                return PolicyDecision(Verdict.DENY, "target_forbidden_zone")
+            if not self._target_allowed(req.target):
+                return PolicyDecision(Verdict.DENY, "target_not_allowed")
+            if req.capability_id not in self.t3_allowed_capabilities:
+                return PolicyDecision(Verdict.DENY, "t3_capability_not_allowed")
+            if req.stage not in self.t3_allowed_stages:
+                return PolicyDecision(Verdict.DENY, "t3_stage_not_allowed")
+            if req.stage == "controlled_impact":
+                return PolicyDecision(Verdict.REQUIRE_APPROVAL, "t3c_requires_approval")
+            return PolicyDecision(Verdict.ALLOW, "t3_policy_allowed")
+        except Exception:  # noqa: BLE001 - policy evaluation must fail closed
+            return PolicyDecision(Verdict.DENY, "evaluation_error")
 
     def _check(self, req: ActionRequest) -> PolicyDecision:
         # 0. taint: a target that came from tool output is untrusted (injection risk)

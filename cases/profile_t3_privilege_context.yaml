@@ -1,0 +1,9 @@
+id: profile_t3_privilege_context
+category: t3.controlled_access
+task: Assess the current authenticated privilege context without elevation.
+scoring: {success_predicate: privilege context is observed read-only}
+tool_mode: mock
+asset_id: asset:winsrv2025-01
+profile_id: t3-access-bounded
+objective: Observe privilege context without changing it
+command_ids: [current_identity, privilege_context]

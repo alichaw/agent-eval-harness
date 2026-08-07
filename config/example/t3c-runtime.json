@@ -1,0 +1,19 @@
+{
+  "assurance_profile": "poc",
+  "scenario_id": "lab.synthetic-marker.v2",
+  "asset_id": "asset:winsrv2025-01",
+  "target": "192.0.2.25",
+  "credential_ref": "<PROTECTED_CREDENTIAL_REFERENCE>",
+  "marker_path": "C:\\ProgramData\\HexStrike\\t3c-synthetic-marker.txt",
+  "marker_content_sha256": "fa7a84325d62b13c3da33154457ff64e77af36a753e5eb75c3aecb793938cd7f",
+  "evidence_root": "runs/t3c",
+  "hexstrike_url": "http://127.0.0.1:8888",
+  "executor_type": "hexstrike_t3c_v2",
+  "allowlisted_targets": ["192.0.2.25"],
+  "denied_networks": ["198.51.100.0/24", "203.0.113.0/24"],
+  "cleanup_required": true,
+  "rollback_verification_required": true,
+  "maximum_duration_seconds": 60,
+  "maximum_tool_calls": 6,
+  "isolated_lab_ready": true
+}

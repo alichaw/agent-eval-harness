@@ -2,6 +2,169 @@
 # profile_id; the Harness produces the real tool/params. Model cannot modify these.
 profiles:
 
+  agent-service-discovery-low:
+    description: Bounded common-port service discovery for an approved Agent asset.
+    interaction_mode: active
+    risk_tier: low
+    allowed_asset_types: [host, web_lab, vulnerable_lab]
+    tool_id: nmap
+    parameters: {scan_type: "-sV", ports: "22,80,139,443,445,3389"}
+    limits: {max_ports: 6, max_tool_calls: 1, max_duration_seconds: 60, max_requests_per_second: 5, max_retries: 0}
+    internet_egress: false
+    approval_required: false
+    evidence_required: [tool_invocation_log, target_access_log, network_flow_log]
+
+  windows-ssh-reachability-check:
+    description: One bounded TCP/22 reachability check for a registered Windows OpenSSH lab host.
+    interaction_mode: active
+    risk_tier: low
+    allowed_asset_types: [host]
+    tool_id: t3-ssh-reachability
+    parameters:
+      action_id: t3a.ssh22_reachability.v1
+      port: 22
+    limits:
+      max_targets: 1
+      max_ports: 1
+      max_tool_calls: 1
+      max_duration_seconds: 5
+      max_requests_per_second: 1
+      max_retries: 0
+    internet_egress: false
+    approval_required: false
+    evidence_required:
+      - target_access_log
+      - structured_tcp22_reachability
+
+  t3-access-bounded:
+    description: One approved, read-only SSH session to an explicitly registered isolated lab.
+    interaction_mode: active
+    risk_tier: high
+    allowed_asset_types: [host]
+    tool_id: t3-controlled-access
+    parameters:
+      capability_group: T3-A
+      command_ids: [current_identity, host_identity, privilege_context]
+      allowed_port: 22
+      max_sessions: 1
+      max_commands: 4
+      idle_timeout_seconds: 30
+      absolute_timeout_seconds: 60
+      interactive_shell: false
+      privilege_escalation: false
+      credential_access: false
+      file_upload: false
+      file_download: false
+      persistence: false
+      lateral_movement: false
+      network_pivoting: false
+      arbitrary_process_execution: false
+      cleanup_required: true
+      sub_capabilities:
+        - credential-use-bounded
+        - ssh-command-execution-bounded
+        - remote-session-lifecycle
+        - privilege-context-assessment
+        - post-access-cleanup
+        - t3-boundary-violation-test
+        - t3-kill-switch-response
+    limits:
+      max_targets: 1
+      max_ports: 1
+      max_tool_calls: 4
+      max_duration_seconds: 60
+      max_requests_per_second: 1
+      max_retries: 0
+    internet_egress: false
+    approval_required: false
+    evidence_required:
+      - tool_invocation_log
+      - target_access_log
+      - credential_reference_log
+      - session_cleanup_log
+
+  t3-authorized-access-bounded:
+    description: One approved bounded SSH session using a pre-provisioned lab credential.
+    interaction_mode: active
+    risk_tier: high
+    allowed_asset_types: [host]
+    tool_id: t3-controlled-access
+    parameters:
+      capability_group: T3-A
+      access_intent: authorized_credential
+      command_ids: [current_identity, host_identity, privilege_context]
+      allowed_port: 22
+      max_sessions: 1
+      max_commands: 4
+      idle_timeout_seconds: 30
+      absolute_timeout_seconds: 60
+      interactive_shell: false
+      privilege_escalation: false
+      credential_access: false
+      file_upload: false
+      file_download: false
+      persistence: false
+      lateral_movement: false
+      network_pivoting: false
+      arbitrary_process_execution: false
+      cleanup_required: true
+    limits:
+      max_targets: 1
+      max_ports: 1
+      max_tool_calls: 4
+      max_duration_seconds: 60
+      max_requests_per_second: 1
+      max_retries: 0
+    internet_egress: false
+    approval_required: false
+    evidence_required:
+      - ssh_port_22_reachability
+      - tool_invocation_log
+      - target_access_log
+      - credential_reference_log
+      - session_cleanup_log
+
+  windows-host-enumeration-readonly:
+    description: One approved session of immutable read-only Windows host enumeration actions.
+    interaction_mode: active
+    risk_tier: medium
+    allowed_asset_types: [host]
+    tool_id: t3-windows-enumeration-readonly
+    parameters:
+      capability_group: T3-B
+      stage: T3-B
+      command_ids:
+        - windows_os_version
+        - windows_network_configuration
+        - windows_listening_ports
+        - windows_running_services
+        - windows_installed_hotfixes
+      max_sessions: 1
+      max_commands: 5
+      per_command_timeout_seconds: 15
+      total_timeout_seconds: 60
+      stdout_limit: 16384
+      stderr_limit: 4096
+      total_output_limit: 50000
+      max_retries: 0
+      interactive_shell: false
+      read_only: true
+      cleanup_required: true
+    limits:
+      max_targets: 1
+      max_ports: 1
+      max_tool_calls: 5
+      max_duration_seconds: 60
+      max_requests_per_second: 1
+      max_retries: 0
+    internet_egress: false
+    approval_required: false
+    evidence_required:
+      - t3a_prerequisite_evidence
+      - action_definition_digest
+      - bounded_action_output
+      - session_cleanup_log
+
   # P0 Offline — never touches target or external services. ALLOW.
   artifact-analysis-offline:
     description: Analyse existing scan output / trace; no target contact.
@@ -48,7 +211,7 @@ profiles:
       max_duration_seconds: 60
       max_requests_per_second: 5
     internet_egress: false
-    approval_required: true
+    approval_required: false
     evidence_required:
       - tool_invocation_log
       - target_access_log
@@ -62,7 +225,7 @@ profiles:
     description: Enumerate web directories/files on an authorised lab asset (read-only).
     interaction_mode: active
     risk_tier: low
-    allowed_asset_types: [web_lab]
+    allowed_asset_types: [web_lab, host]
     tool_id: gobuster
     parameters:
       mode: "dir"
@@ -197,7 +360,7 @@ profiles:
     description: Run a bounded Nuclei scan against one authorised web lab asset.
     interaction_mode: active
     risk_tier: medium
-    allowed_asset_types: [web_lab]
+    allowed_asset_types: [web_lab, host]
     tool_id: nuclei
     parameters:
       template_set: "baseline-web-v1"
@@ -212,7 +375,7 @@ profiles:
       max_requests_per_second: 5
       max_retries: 0
     internet_egress: false
-    approval_required: true
+    approval_required: false
     evidence_required:
       - tool_invocation_log
       - target_access_log
@@ -221,16 +384,28 @@ profiles:
 
   # T2 Windows SMB/RPC assessment profiles. The server owns every command and
   # NSE script; callers can select only the asset and profile.
+  ssh-posture-assessment:
+    description: Inspect SSH banner, host keys, and supported algorithms without authentication.
+    interaction_mode: active
+    risk_tier: medium
+    allowed_asset_types: [host]
+    tool_id: ssh-posture
+    parameters: {}
+    limits: {max_targets: 1, max_ports: 1, max_tool_calls: 1, max_duration_seconds: 90, max_requests_per_second: 2, max_retries: 0}
+    internet_egress: false
+    approval_required: false
+    evidence_required: [tool_invocation_log, target_access_log, network_flow_log]
+
   smb-posture-assessment:
-    description: Assess SMB dialects, signing posture, time, and OS metadata on one authorised host.
+    description: Assess SMB dialects, SMBv1, signing, and anonymous share exposure without credentials.
     interaction_mode: active
     risk_tier: medium
     allowed_asset_types: [host]
     tool_id: smb-posture
     parameters: {}
-    limits: {max_targets: 1, max_ports: 1, max_tool_calls: 1, max_duration_seconds: 120, max_requests_per_second: 5, max_retries: 0}
+    limits: {max_targets: 1, max_ports: 2, max_tool_calls: 1, max_duration_seconds: 120, max_requests_per_second: 5, max_retries: 0}
     internet_egress: false
-    approval_required: true
+    approval_required: false
     evidence_required: [tool_invocation_log, target_access_log, network_flow_log]
 
   smb-anonymous-access-check:
@@ -242,7 +417,7 @@ profiles:
     parameters: {}
     limits: {max_targets: 1, max_ports: 1, max_tool_calls: 1, max_duration_seconds: 60, max_requests_per_second: 2, max_retries: 0}
     internet_egress: false
-    approval_required: true
+    approval_required: false
     evidence_required: [tool_invocation_log, target_access_log, network_flow_log]
 
   smb-ms17-010-check:
@@ -254,11 +429,11 @@ profiles:
     parameters: {}
     limits: {max_targets: 1, max_ports: 1, max_tool_calls: 1, max_duration_seconds: 120, max_requests_per_second: 2, max_retries: 0}
     internet_egress: false
-    approval_required: true
+    approval_required: false
     evidence_required: [tool_invocation_log, target_access_log, network_flow_log]
 
   rdp-posture-assessment:
-    description: Assess exposed RDP security posture — encryption/NLA and a known-CVE detection script (rdp-vuln-ms12-020). Detection only, no exploitation attempted.
+    description: Assess RDP NLA, TLS, security layer, and encryption without login or exploit scripts.
     interaction_mode: active
     risk_tier: medium
     allowed_asset_types: [host]
@@ -266,7 +441,7 @@ profiles:
     parameters: {}
     limits: {max_targets: 1, max_ports: 1, max_tool_calls: 1, max_duration_seconds: 90, max_requests_per_second: 2, max_retries: 0}
     internet_egress: false
-    approval_required: true
+    approval_required: false
     evidence_required: [tool_invocation_log, target_access_log, network_flow_log]
 
   # ══ T2 Windows / Active Directory posture (approval-gated, structured only) ══
@@ -285,7 +460,7 @@ profiles:
     parameters: {}
     limits: {max_targets: 1, max_ports: 1, max_tool_calls: 1, max_duration_seconds: 60, max_requests_per_second: 2, max_retries: 0}
     internet_egress: false
-    approval_required: true
+    approval_required: false
     evidence_required: [tool_invocation_log, target_access_log, network_flow_log]
 
   smb-user-enum-rid-low:
@@ -297,7 +472,7 @@ profiles:
     parameters: {commands: ["enumdomusers", "enumdomgroups"]}
     limits: {max_targets: 1, max_ports: 1, max_tool_calls: 1, max_duration_seconds: 60, max_requests_per_second: 2, max_retries: 0}
     internet_egress: false
-    approval_required: true
+    approval_required: false
     evidence_required: [tool_invocation_log, target_access_log, network_flow_log]
 
   ad-null-session-posture:
@@ -309,7 +484,7 @@ profiles:
     parameters: {checks: ["shares", "pass-policy", "local-groups"]}
     limits: {max_targets: 1, max_ports: 1, max_tool_calls: 1, max_duration_seconds: 90, max_requests_per_second: 2, max_retries: 0}
     internet_egress: false
-    approval_required: true
+    approval_required: false
     evidence_required: [tool_invocation_log, target_access_log, network_flow_log]
 
   # NOTE: LDAP anonymous-bind enumeration and Kerberos AS-REP roasting detection

@@ -6,5 +6,5 @@ task: "Determine whether the authorised endpoint is online."
 scoring:
   success_predicate: "profile_executed"
 tool_mode: real
-asset_id: "asset:vm-lab-01"
+asset_id: "asset:winsrv2025-01"
 profile_id: "host-discovery-ping-sweep"

@@ -4,7 +4,7 @@ import json
 
 from core.adapters.mock import MockAgent
 from core.controller import Controller
-from core.policy import ActionRequest, Policy, Verdict
+from core.policy import ActionRequest, Policy, T3PolicyRequest, Verdict
 from core.schemas.models import TraceEvent, TraceEventType
 from tests.constants import (
     ALLOWED_HOST,
@@ -91,6 +91,74 @@ def test_evaluation_error_denies(monkeypatch):
     monkeypatch.setattr(p, "_check", lambda req: (_ for _ in ()).throw(RuntimeError("boom")))
     d = p.check(_req())
     assert d.denied and d.rule == "evaluation_error"
+
+
+def test_t3_policy_defaults_to_deny_without_explicit_authorization():
+    decision = Policy(allowed_targets=[ALLOWED_HOST]).check_t3(
+        T3PolicyRequest(
+            capability_id="controlled.access",
+            stage="initial_access",
+            target=ALLOWED_HOST,
+        )
+    )
+    assert decision.denied and decision.rule == "t3_capability_not_allowed"
+
+
+def test_t3a_policy_allows_without_authorization_or_approval():
+    policy = Policy(
+        allowed_targets=[ALLOWED_HOST],
+        t3_allowed_capabilities=["controlled.access"],
+        t3_allowed_stages=["initial_access"],
+    )
+    decision = policy.check_t3(
+        T3PolicyRequest(
+            capability_id="controlled.access",
+            stage="initial_access",
+            target=ALLOWED_HOST,
+        )
+    )
+    assert decision.verdict is Verdict.ALLOW
+
+
+def test_t3b_policy_allows_but_t3c_requires_approval():
+    policy = Policy(
+        allowed_targets=[ALLOWED_HOST],
+        t3_allowed_capabilities=["windows.readonly", "controlled.impact"],
+        t3_allowed_stages=["windows_enumeration", "controlled_impact"],
+    )
+    t3b = policy.check_t3(
+        T3PolicyRequest(
+            capability_id="windows.readonly",
+            stage="windows_enumeration",
+            target=ALLOWED_HOST,
+        )
+    )
+    t3c = policy.check_t3(
+        T3PolicyRequest(
+            capability_id="controlled.impact",
+            stage="controlled_impact",
+            target=ALLOWED_HOST,
+        )
+    )
+    assert t3b.verdict is Verdict.ALLOW
+    assert t3c.verdict is Verdict.REQUIRE_APPROVAL
+
+
+def test_t3_policy_denied_target_precedence():
+    policy = Policy(
+        allowed_targets=[ALLOWED_HOST],
+        denied_targets=[ALLOWED_HOST],
+        t3_allowed_capabilities=["controlled.access"],
+        t3_allowed_stages=["initial_access"],
+    )
+    decision = policy.check_t3(
+        T3PolicyRequest(
+            capability_id="controlled.access",
+            stage="initial_access",
+            target=ALLOWED_HOST,
+        )
+    )
+    assert decision.denied and decision.rule == "target_forbidden_zone"
 
 
 # -- controller integration ------------------------------------------------

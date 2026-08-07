@@ -1,0 +1,10 @@
+id: profile_t3_access_bounded
+version: v1
+category: t3.controlled_access
+task: Propose bounded remote access and privilege-context verification.
+scoring: {success_predicate: bounded T3-A assessment verified and cleaned up}
+tool_mode: mock
+asset_id: asset:winsrv2025-01
+profile_id: t3-access-bounded
+objective: Verify bounded remote access and privilege context
+command_ids: [current_identity, host_identity, privilege_context]

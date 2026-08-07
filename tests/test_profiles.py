@@ -7,10 +7,11 @@ import pytest
 
 from core.adapters.mock import MockAgent
 from core.controller import Controller
+from core.enforcement import effective_approval_fingerprint, resolve_effective_action
 from core.executor import gate
 from core.policy import Policy, Verdict
 from core.profiles import AssetRegistry, ProfileCatalog, ProfileError
-from core.safety import ApprovalAuthority, ExecutionState, KillSwitch, profile_fingerprint
+from core.safety import ApprovalAuthority, ExecutionState, KillSwitch
 from core.schemas.models import TraceEvent, TraceEventType
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -60,7 +61,7 @@ def _trace_events(run_dir):
 def test_catalog_loads_and_carries_evidence():
     profile = _cat().get("tcp-service-inventory-low")
 
-    assert profile.approval_required is True
+    assert profile.approval_required is False
     assert "network_flow_log" in profile.evidence_required
 
 
@@ -85,15 +86,15 @@ def _run(case_name):
     return controller.run_case(case_path, MockAgent())
 
 
-def test_approval_profile_requires_approval():
+def test_t2_profile_runs_after_policy_gate_without_approval():
     run_dir = _run("profile_tcp_inventory.yaml")
     result_path = run_dir / "result.json"
     result = json.loads(result_path.read_text())
 
-    assert result["policy_verdict"] == "require_approval"
+    assert result["agent_reported_completed"] is True
 
     events = _trace_events(run_dir)
-    assert not any(event.type is TraceEventType.TOOL_CALL for event in events)
+    assert any(event.type is TraceEventType.TOOL_CALL for event in events)
 
 
 def test_low_impact_profile_allowed_and_runs():
@@ -154,7 +155,7 @@ def test_httpx_t1_profile_uses_structured_parameters():
     assert "custom_flags" not in params
 
 
-def test_direct_profile_accepts_bound_single_use_approval(tmp_path):
+def test_direct_t2_profile_does_not_consume_supplied_approval(tmp_path):
     catalog = _cat()
     assets = _assets()
     profile = catalog.get("tcp-service-inventory-low")
@@ -162,7 +163,12 @@ def test_direct_profile_accepts_bound_single_use_approval(tmp_path):
     token = authority.issue(
         "asset:t1-target",
         profile.profile_id,
-        profile_fingerprint(profile),
+        effective_approval_fingerprint(
+            resolve_effective_action(catalog, assets, "asset:t1-target", profile.profile_id)
+        ),
+        action_fingerprint=resolve_effective_action(
+            catalog, assets, "asset:t1-target", profile.profile_id
+        ).fingerprint,
     )
     controller = Controller(
         runs_root=tmp_path / "runs",
@@ -180,7 +186,7 @@ def test_direct_profile_accepts_bound_single_use_approval(tmp_path):
     events = _trace_events(run_dir)
     states = [event.state for event in events if event.type is TraceEventType.EXECUTION_STATE]
 
-    assert ExecutionState.APPROVED.value in states
+    assert ExecutionState.APPROVED.value not in states
     assert ExecutionState.RUNNING.value in states
     assert any(event.type is TraceEventType.TOOL_CALL for event in events)
 
@@ -250,7 +256,7 @@ def test_late_kill_switch_does_not_relabel_completed_adapter(tmp_path):
     assert states[-1] == ExecutionState.VERIFIED.value
 
 
-def test_bounded_nuclei_profile_requires_approval_and_has_no_raw_flags():
+def test_bounded_nuclei_profile_does_not_allow_and_has_no_raw_flags():
     decision, resolved = gate(
         _cat(),
         _assets(),
@@ -259,11 +265,11 @@ def test_bounded_nuclei_profile_requires_approval_and_has_no_raw_flags():
         "web-vulnerability-scan-bounded",
     )
 
-    assert decision.verdict is Verdict.REQUIRE_APPROVAL
+    assert decision.verdict is Verdict.ALLOW
     assert resolved is not None
     assert resolved["tool"] == "nuclei"
     profile = resolved["profile"]
-    assert profile.approval_required is True
+    assert profile.approval_required is False
     assert profile.risk_tier.value == "medium"
 
     params = resolved["params"]
@@ -285,7 +291,7 @@ def test_bounded_nuclei_profile_requires_approval_and_has_no_raw_flags():
         ("rdp-posture-assessment", "rdp-posture"),
     ],
 )
-def test_smb_profiles_require_approval_and_expose_no_commands(profile_id, tool):
+def test_smb_profiles_allow_and_expose_no_commands(profile_id, tool):
     decision, resolved = gate(
         _cat(),
         _assets(),
@@ -294,10 +300,10 @@ def test_smb_profiles_require_approval_and_expose_no_commands(profile_id, tool):
         profile_id,
     )
 
-    assert decision.verdict is Verdict.REQUIRE_APPROVAL
+    assert decision.verdict is Verdict.ALLOW
     assert resolved is not None
     assert resolved["tool"] == tool
-    assert resolved["profile"].approval_required is True
+    assert resolved["profile"].approval_required is False
     params = resolved["params"]
     assert "command" not in params
     assert "scripts" not in params
@@ -314,7 +320,7 @@ def test_smb_profiles_require_approval_and_expose_no_commands(profile_id, tool):
         ("ad-null-session-posture", "netexec"),
     ],
 )
-def test_ad_t2_profiles_require_approval_and_expose_no_raw_flags(profile_id, tool):
+def test_ad_t2_profiles_allow_and_expose_no_raw_flags(profile_id, tool):
     decision, resolved = gate(
         _cat(),
         _assets(),
@@ -323,11 +329,11 @@ def test_ad_t2_profiles_require_approval_and_expose_no_raw_flags(profile_id, too
         profile_id,
     )
 
-    assert decision.verdict is Verdict.REQUIRE_APPROVAL
+    assert decision.verdict is Verdict.ALLOW
     assert resolved is not None
     assert resolved["tool"] == tool
     profile = resolved["profile"]
-    assert profile.approval_required is True
+    assert profile.approval_required is False
     assert profile.risk_tier.value == "medium"
 
     params = resolved["params"]

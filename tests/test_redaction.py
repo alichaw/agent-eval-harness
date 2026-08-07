@@ -14,6 +14,8 @@ RAW_TARGET = "192.0.2.44"
 
 class _EchoAgent(AgentAdapter):
     name = "echo"
+    execution_capable = False
+    requires_authoritative_context = False
 
     def run(self, task, ctx):
         ctx.trace.emit(
@@ -57,9 +59,7 @@ def test_trace_writer_redacts_nested_values(tmp_path):
 
 
 def test_asset_target_uses_explicit_non_routable_marker():
-    assets = AssetRegistry(
-        {"asset:t1-container": {"target": "t1-target", "asset_type": "web_lab"}}
-    )
+    assets = AssetRegistry({"asset:t1-container": {"target": "t1-target", "asset_type": "web_lab"}})
     redactor = Redactor.from_assets(assets)
 
     assert redactor.text("http://t1-target:8000") == "http://<asset:t1-container>:8000"

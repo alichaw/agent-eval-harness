@@ -16,12 +16,22 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import uuid
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
 
 from core.adapters.base import AgentAdapter, RunContext
+from core.artifacts import ArtifactSealAuthority
+from core.enforcement import (
+    authorize_execution,
+    effective_approval_fingerprint,
+    evaluate_effective_action,
+    resolve_effective_action,
+)
+from core.investigation.models import InvestigationState
 from core.policy import Policy
 from core.redaction import Redactor
 from core.safety import (
@@ -29,9 +39,47 @@ from core.safety import (
     ApprovalError,
     ExecutionState,
     KillSwitch,
-    profile_fingerprint,
 )
-from core.schemas.models import SCHEMA_VERSION, AgentResult, TaskSpec, TraceEventType
+from core.schemas.models import SCHEMA_VERSION, AgentResult, TaskSpec, ToolMode, TraceEventType
+from core.t3.access import (
+    SESSION_POLICY,
+    T3_ACCESS_CAPABILITY,
+    T3_ACCESS_METHOD,
+    T3_ACCESS_PLATFORM,
+    T3_ACCESS_SCOPE,
+    T3_AUTHORIZED_ACCESS_PROFILE,
+    BoundedLabSshExecutionPlan,
+    BoundedLabSshT3Executor,
+    ParamikoBoundedSshTransport,
+    T3AccessOutcome,
+    T3CommandId,
+    t3_access_approval_fingerprint,
+)
+from core.t3.assurance import (
+    DEFERRED_CHECKS,
+    AssuranceContext,
+    AssuranceProfile,
+    ReadinessStatus,
+)
+from core.t3.executor import (
+    LAB_EXECUTION_SCOPE,
+    LAB_PLATFORM,
+    LAB_SSH_CAPABILITY,
+    LAB_SSH_METHOD,
+    LAB_SSH_PORT,
+    LabObservation,
+    LabSshExecutionPlan,
+    LabSshT3Executor,
+    LabT3Outcome,
+    MockT3ExecutionPlan,
+    MockT3Executor,
+    MockT3Outcome,
+    ParamikoLabSshTransport,
+    T3Executor,
+    lab_target_is_locally_permitted,
+    valid_pinned_host_key,
+)
+from core.t3.models import T3ActionRequest, t3_action_fingerprint
 from core.trace.writer import TraceWriter
 
 
@@ -50,8 +98,18 @@ def _case_hash(path: str | Path) -> str:
 
 def make_run_id(case: TaskSpec, case_path: str | Path, now: datetime | None = None) -> str:
     now = now or datetime.now(timezone.utc)
-    stamp = now.strftime("%Y%m%d-%H%M%S")
-    return f"{stamp}-{case.id}-{_case_hash(case_path)}"
+    stamp = now.strftime("%Y%m%d-%H%M%S-%f")
+    return f"{stamp}-{case.id}-{_case_hash(case_path)}-{uuid.uuid4().hex[:12]}"
+
+
+def _create_run_dir(runs_root: Path, run_id: str) -> Path:
+    root = runs_root.resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    candidate = (root / run_id).resolve()
+    if candidate.parent != root:
+        raise ValueError("unsafe run directory")
+    candidate.mkdir(mode=0o700, exist_ok=False)
+    return candidate
 
 
 class Controller:
@@ -65,6 +123,7 @@ class Controller:
         job_create_token: str = "",
         approval_authority: ApprovalAuthority | None = None,
         kill_switch: KillSwitch | None = None,
+        assurance: AssuranceContext | None = None,
     ):
         self.runs_root = Path(runs_root)
         self.policy = policy
@@ -74,6 +133,8 @@ class Controller:
         self.job_create_token = job_create_token
         self.approval_authority = approval_authority
         self.kill_switch = kill_switch
+        self._assurance_explicit = assurance is not None
+        self.assurance = assurance or AssuranceContext(AssuranceProfile.HARDENED)
 
     def _resolve_profile(self, case):
         """If the case is profile-driven ({asset_id, profile_id}), resolve it into a
@@ -85,30 +146,692 @@ class Controller:
 
         if self.catalog is None or self.assets is None:
             raise ProfileError("profile-driven case but no catalog/assets loaded")
-        profile = self.catalog.get(case.profile_id)  # fail-closed on unknown
-        asset = self.assets.resolve(case.asset_id)  # fail-closed on unknown
-        params = dict(
-            profile.parameters,
-            ports=asset.get("ports", ""),
-        )
-        params.update(asset.get("tool_args", {}) or {})
-
+        action = resolve_effective_action(self.catalog, self.assets, case.asset_id, case.profile_id)
         return {
-            "tool": profile.tool_id,
-            "target": asset.get("target", ""),
-            "params": params,
-            "profile": profile,
+            "tool": action.tool,
+            "target": action.target,
+            "params": action.params_dict,
+            "profile": action.profile,
+            "action": action,
         }
 
     # optional; when set, every run is policy-gated
+
+    def run_t3_action(
+        self,
+        request: T3ActionRequest | dict[str, object],
+        state: InvestigationState,
+        executor: T3Executor,
+        approval_token: str | None = None,
+    ) -> Path:
+        """Run the mock-only T3 control chain and persist auditable artifacts.
+
+        Validation order is request, assets, policy, evidence, fingerprint,
+        approval consumption, then the non-executing mock boundary.
+        """
+        from core.policy import T3PolicyRequest, Verdict
+        from core.t3.gate import validate_t3_prerequisites
+
+        run_id = f"{datetime.now(timezone.utc):%Y%m%d-%H%M%S}-t3-{time.time_ns()}"
+        run_dir = self.runs_root / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        redactor = Redactor.from_assets(self.assets, redact_credentials=True)
+        trace = TraceWriter(run_id, run_dir / "trace.jsonl", redactor=redactor)
+        t3_runtime_binding_fingerprint = ""
+
+        bounded_executor_impl = (
+            executor
+            if isinstance(executor, BoundedLabSshT3Executor)
+            and type(executor) is BoundedLabSshT3Executor
+            else None
+        )
+        from core.t3.hexstrike_access import HexStrikeT3AExecutor
+
+        hexstrike_executor_impl = (
+            executor
+            if isinstance(executor, HexStrikeT3AExecutor) and type(executor) is HexStrikeT3AExecutor
+            else None
+        )
+        lab_executor_impl = (
+            executor
+            if isinstance(executor, LabSshT3Executor) and type(executor) is LabSshT3Executor
+            else None
+        )
+        mock_executor_impl = (
+            executor
+            if isinstance(executor, MockT3Executor) and type(executor) is MockT3Executor
+            else None
+        )
+        bounded_executor = bounded_executor_impl is not None or hexstrike_executor_impl is not None
+        lab_executor = lab_executor_impl is not None
+        mock_executor = mock_executor_impl is not None
+        forbidden_direct_transport = (
+            bounded_executor_impl is not None
+            and isinstance(bounded_executor_impl.transport, ParamikoBoundedSshTransport)
+        ) or (
+            lab_executor_impl is not None
+            and isinstance(lab_executor_impl.transport, ParamikoLabSshTransport)
+        )
+        manifest = {
+            "run_id": run_id,
+            "created_utc": datetime.now(timezone.utc).isoformat(),
+            "agent": "hexstrike-t3a"
+            if hexstrike_executor_impl is not None
+            else "bounded-lab-ssh-t3"
+            if bounded_executor
+            else ("lab-ssh-t3" if lab_executor else "mock-t3"),
+            "schema_version": SCHEMA_VERSION,
+            "policy_gated": True,
+            "mock_only": not (lab_executor or bounded_executor),
+            "execution_mode": ("lab_real" if lab_executor or bounded_executor else "offline_mock"),
+            "assurance_profile": self.assurance.profile.value,
+            "assurance_config_source": self.assurance.trusted_source,
+            "signed_permit_status": (
+                "SKIPPED_BY_PROFILE"
+                if self.assurance.profile is AssuranceProfile.POC
+                else "REQUIRED"
+            ),
+            "signed_permit_reason": (
+                "poc_profile"
+                if self.assurance.profile is AssuranceProfile.POC
+                else "hardened_profile"
+            ),
+        }
+        (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+        if self._assurance_explicit:
+            trace.emit(
+                TraceEventType.POLICY_EVENT,
+                rule="assurance_profile_resolved",
+                verdict="allow",
+                assurance_profile=self.assurance.profile.value,
+                assurance_config_source=self.assurance.trusted_source,
+                text="Trusted operator assurance profile resolved",
+            )
+            if self.assurance.profile is AssuranceProfile.POC:
+                for check, (_, reference) in DEFERRED_CHECKS.items():
+                    trace.emit(
+                        TraceEventType.POLICY_EVENT,
+                        rule=check,
+                        verdict="skip",
+                        readiness_status=ReadinessStatus.SKIPPED_BY_PROFILE.value,
+                        assurance_profile=self.assurance.profile.value,
+                        assurance_config_source=self.assurance.trusted_source,
+                        text=(
+                            "Deferred from the research PoC acceptance scope"
+                            + (f" (AISVS {reference})" if reference else "")
+                        ),
+                    )
+
+        def emit(rule: str, verdict: str, text: str) -> None:
+            trace.emit(
+                TraceEventType.POLICY_EVENT,
+                rule=rule,
+                verdict=verdict,
+                text=text,
+            )
+
+        def finish(
+            *,
+            completed: bool,
+            status: str,
+            rule: str,
+            control_authorized: bool = False,
+            approval_consumed: bool = False,
+            executor_invoked: bool = False,
+            outcome: MockT3Outcome | LabT3Outcome | T3AccessOutcome | None = None,
+        ) -> Path:
+            emit(
+                "t3_final_result",
+                Verdict.ALLOW.value if completed else Verdict.DENY.value,
+                "T3 flow completed" if completed else "T3 flow denied",
+            )
+            result = {
+                "run_id": run_id,
+                "asset_id": (
+                    request.source_asset_id if isinstance(request, T3ActionRequest) else None
+                ),
+                "profile_id": (
+                    request.capability_id if isinstance(request, T3ActionRequest) else None
+                ),
+                "stage": (request.stage.value if isinstance(request, T3ActionRequest) else None),
+                "runtime_binding_fingerprint": t3_runtime_binding_fingerprint,
+                "assurance_profile": self.assurance.profile.value,
+                "assurance_config_source": self.assurance.trusted_source,
+                "signed_permit_status": (
+                    "SKIPPED_BY_PROFILE"
+                    if self.assurance.profile is AssuranceProfile.POC
+                    else "REQUIRED"
+                ),
+                "signed_permit_reason": (
+                    "poc_profile"
+                    if self.assurance.profile is AssuranceProfile.POC
+                    else "hardened_profile"
+                ),
+                # A run profile alone is not a production-readiness attestation.
+                "production_ready": False,
+                "aisvs_level_2_or_3_compliance_claimed": False,
+                "assurance_deferred_controls": (
+                    list(DEFERRED_CHECKS) if self.assurance.profile is AssuranceProfile.POC else []
+                ),
+                "completed": completed,
+                "status": status,
+                "rule": rule,
+                "control_authorized": control_authorized,
+                "approval_consumed": approval_consumed,
+                "approval_succeeded": approval_consumed,
+                "mock_executor_invoked": executor_invoked and mock_executor,
+                "lab_executor_invoked": executor_invoked and (lab_executor or bounded_executor),
+                "real_action_performed": (
+                    outcome.real_action_performed if outcome is not None else False
+                ),
+                "mock_outcome": (asdict(outcome) if isinstance(outcome, MockT3Outcome) else None),
+                "lab_outcome": (
+                    outcome.result_document()
+                    if isinstance(outcome, (LabT3Outcome, T3AccessOutcome))
+                    else None
+                ),
+            }
+            (run_dir / "result.json").write_text(json.dumps(redactor.value(result), indent=2))
+            if self.approval_authority is not None:
+                ArtifactSealAuthority.from_approval_authority(self.approval_authority).seal(run_dir)
+            return run_dir
+
+        # A. Revalidate model instances too: model_copy(update=...) can bypass checks.
+        try:
+            if isinstance(request, T3ActionRequest):
+                request = T3ActionRequest.model_validate(request.model_dump())
+            else:
+                request = T3ActionRequest.model_validate(request)
+        except Exception:  # noqa: BLE001 - request failures must not expose input
+            emit("t3_request_invalid", Verdict.DENY.value, "T3 request rejected")
+            return finish(completed=False, status="denied", rule="t3_request_invalid")
+        emit("t3_request_accepted", Verdict.ALLOW.value, "T3 request accepted for evaluation")
+
+        if forbidden_direct_transport:
+            emit(
+                "t3_hexstrike_executor_required",
+                Verdict.DENY.value,
+                "Direct T3 transport rejected",
+            )
+            return finish(
+                completed=False,
+                status="denied",
+                rule="t3_hexstrike_executor_required",
+            )
+        if not (mock_executor or lab_executor or bounded_executor):
+            emit("t3_executor_required", Verdict.DENY.value, "T3 executor rejected")
+            return finish(completed=False, status="denied", rule="t3_executor_required")
+        if lab_executor or bounded_executor:
+            emit("lab_executor_selected", Verdict.ALLOW.value, "Lab executor selected")
+
+        if self.kill_switch is not None and self.kill_switch.engaged():
+            emit("kill_switch_engaged", Verdict.DENY.value, "T3 action blocked")
+            return finish(completed=False, status="denied", rule="kill_switch_engaged")
+
+        # B/C. Resolve registry-controlled targets before making policy requests.
+        if self.assets is None:
+            emit("t3_source_asset_unresolved", Verdict.DENY.value, "Source asset rejected")
+            return finish(completed=False, status="denied", rule="t3_source_asset_unresolved")
+        try:
+            source = self.assets.resolve(request.source_asset_id)
+        except Exception:  # noqa: BLE001 - registry failures must not expose details
+            emit("t3_source_asset_unresolved", Verdict.DENY.value, "Source asset rejected")
+            return finish(completed=False, status="denied", rule="t3_source_asset_unresolved")
+        source_target_value = source.get("target")
+        if not isinstance(source_target_value, str) or not source_target_value.strip():
+            emit("t3_source_target_invalid", Verdict.DENY.value, "Source asset rejected")
+            return finish(completed=False, status="denied", rule="t3_source_target_invalid")
+        source_target = source_target_value.strip()
+
+        lab_observation = None
+        bounded_commands: tuple[T3CommandId, ...] = ()
+        if lab_executor or bounded_executor:
+            selected_bounded_executor = bounded_executor_impl or hexstrike_executor_impl
+            enabled = (
+                bounded_executor_impl.enabled
+                if bounded_executor_impl is not None
+                else hexstrike_executor_impl.enabled
+                if hexstrike_executor_impl is not None
+                else lab_executor_impl.enabled
+                if lab_executor_impl is not None
+                else False
+            )
+            if not enabled:
+                emit(
+                    "lab_execution_disabled",
+                    Verdict.DENY.value,
+                    "Lab execution is disabled",
+                )
+                return finish(
+                    completed=False,
+                    status="lab_execution_disabled",
+                    rule="lab_execution_disabled",
+                )
+            emit(
+                "lab_execution_enablement_checked",
+                Verdict.ALLOW.value,
+                "Lab execution explicitly enabled",
+            )
+            if selected_bounded_executor is not None:
+                try:
+                    bounded_commands = tuple(T3CommandId(value) for value in request.command_scope)
+                except ValueError:
+                    bounded_commands = ()
+                lab_request_permitted = (
+                    (
+                        (
+                            request.stage.value == "initial_access"
+                            and request.capability_id == T3_ACCESS_CAPABILITY
+                        )
+                        or (
+                            request.stage.value == "authorized_access"
+                            and request.capability_id == T3_AUTHORIZED_ACCESS_PROFILE
+                        )
+                    )
+                    and request.destination_asset_id is None
+                    and request.method == T3_ACCESS_METHOD
+                    and 0 < len(bounded_commands) <= SESSION_POLICY.max_commands
+                    and len(set(bounded_commands)) == len(bounded_commands)
+                    and request.credential_ref is not None
+                )
+                credential_binding_permitted = (
+                    source.get("credential_ref") == request.credential_ref
+                    if request.stage.value == "authorized_access"
+                    else source.get("credential_ref") in (None, request.credential_ref)
+                )
+                lab_request_permitted = lab_request_permitted and credential_binding_permitted
+            else:
+                try:
+                    lab_observation = LabObservation(request.command_scope[0])
+                except (IndexError, ValueError):
+                    lab_observation = None
+                lab_request_permitted = (
+                    request.stage.value == "initial_access"
+                    and request.destination_asset_id is None
+                    and request.capability_id == LAB_SSH_CAPABILITY
+                    and request.method == LAB_SSH_METHOD
+                    and len(request.command_scope) == 1
+                    and lab_observation is not None
+                    and request.credential_ref is not None
+                )
+            asset_permitted = (
+                source.get("asset_type") == "host"
+                and source.get("execution_scope")
+                == (T3_ACCESS_SCOPE if bounded_executor else LAB_EXECUTION_SCOPE)
+                and source.get("platform")
+                == (T3_ACCESS_PLATFORM if bounded_executor else LAB_PLATFORM)
+                and type(source.get("ssh_port")) is int
+                and source.get("ssh_port") == LAB_SSH_PORT
+                and valid_pinned_host_key(source.get("ssh_host_key"))
+                and source_target
+                == (
+                    selected_bounded_executor.permitted_target
+                    if selected_bounded_executor is not None
+                    else lab_executor_impl.permitted_target
+                    if lab_executor_impl is not None
+                    else ""
+                )
+                and (
+                    bounded_executor
+                    or (
+                        lab_executor_impl is not None
+                        and 0 < lab_executor_impl.timeout_seconds <= 10
+                    )
+                )
+                and lab_target_is_locally_permitted(source_target)
+            )
+            if not lab_request_permitted or not asset_permitted:
+                emit(
+                    "lab_target_not_permitted",
+                    Verdict.DENY.value,
+                    "Lab target constraints rejected",
+                )
+                return finish(
+                    completed=False,
+                    status="lab_target_not_permitted",
+                    rule="lab_target_not_permitted",
+                )
+            emit(
+                "lab_target_constraint_checked",
+                Verdict.ALLOW.value,
+                "Lab target constraints accepted",
+            )
+
+        destination = None
+        destination_target = None
+        if request.destination_asset_id is not None:
+            try:
+                destination = self.assets.resolve(request.destination_asset_id)
+            except Exception:  # noqa: BLE001 - registry failures must not expose details
+                emit(
+                    "t3_destination_asset_unresolved",
+                    Verdict.DENY.value,
+                    "Destination asset rejected",
+                )
+                return finish(
+                    completed=False,
+                    status="denied",
+                    rule="t3_destination_asset_unresolved",
+                )
+            destination_target_value = destination.get("target")
+            if (
+                not isinstance(destination_target_value, str)
+                or not destination_target_value.strip()
+            ):
+                emit(
+                    "t3_destination_target_invalid",
+                    Verdict.DENY.value,
+                    "Destination asset rejected",
+                )
+                return finish(
+                    completed=False,
+                    status="denied",
+                    rule="t3_destination_target_invalid",
+                )
+            destination_target = destination_target_value.strip()
+            # AssetRegistry has no canonical identity API yet. Exact resolved target
+            # equality prevents aliases with identical target strings from being
+            # treated as movement; hostname/IP equivalence remains out of scope.
+            if destination_target == source_target:
+                emit(
+                    "t3_destination_same_as_source",
+                    Verdict.DENY.value,
+                    "Destination asset rejected",
+                )
+                return finish(
+                    completed=False,
+                    status="denied",
+                    rule="t3_destination_same_as_source",
+                )
+
+        # D. Each resolved target is independently checked by the existing policy.
+        if self.policy is None:
+            emit("t3_policy_required", Verdict.DENY.value, "T3 policy authorization denied")
+            return finish(completed=False, status="denied", rule="t3_policy_required")
+
+        source_decision = self.policy.check_t3(
+            T3PolicyRequest(
+                capability_id=request.capability_id,
+                stage=request.stage.value,
+                target=source_target,
+            )
+        )
+        if source_decision.verdict is not Verdict.ALLOW:
+            emit(source_decision.rule, Verdict.DENY.value, "Source policy authorization denied")
+            return finish(completed=False, status="denied", rule=source_decision.rule)
+        emit("t3_source_authorized", Verdict.ALLOW.value, "Source policy authorization accepted")
+
+        if destination is not None:
+            if destination_target is None:
+                emit(
+                    "t3_destination_target_invalid",
+                    Verdict.DENY.value,
+                    "Destination asset rejected",
+                )
+                return finish(
+                    completed=False,
+                    status="denied",
+                    rule="t3_destination_target_invalid",
+                )
+            destination_decision = self.policy.check_t3(
+                T3PolicyRequest(
+                    capability_id=request.capability_id,
+                    stage=request.stage.value,
+                    target=destination_target,
+                )
+            )
+            if destination_decision.verdict is not Verdict.ALLOW:
+                emit(
+                    destination_decision.rule,
+                    Verdict.DENY.value,
+                    "Destination policy authorization denied",
+                )
+                return finish(
+                    completed=False,
+                    status="denied",
+                    rule=destination_decision.rule,
+                )
+            emit(
+                "t3_destination_authorized",
+                Verdict.ALLOW.value,
+                "Destination policy authorization accepted",
+            )
+
+        # E. Evidence suitability is independent of target authorization.
+        gate_decision = validate_t3_prerequisites(request, state, self.assets)
+        if gate_decision.denied:
+            emit(gate_decision.rule, Verdict.DENY.value, "T3 prerequisites rejected")
+            return finish(completed=False, status="denied", rule=gate_decision.rule)
+        emit(
+            "t3_prerequisites_satisfied",
+            Verdict.ALLOW.value,
+            "T3 prerequisites accepted",
+        )
+
+        # F/G/H. The Controller computes and requires the exact action binding.
+        selected_bounded_executor = bounded_executor_impl or hexstrike_executor_impl
+        if selected_bounded_executor is not None:
+            action_fingerprint = (
+                selected_bounded_executor.approval_fingerprint
+                or t3_access_approval_fingerprint(request)
+            )
+        else:
+            action_fingerprint = t3_action_fingerprint(request)
+        t3_runtime_binding_fingerprint = (
+            selected_bounded_executor.runtime_binding_fingerprint
+            if selected_bounded_executor is not None
+            else action_fingerprint
+        )
+        if not action_fingerprint:
+            emit("t3_fingerprint_invalid", Verdict.DENY.value, "T3 approval rejected")
+            return finish(completed=False, status="denied", rule="t3_fingerprint_invalid")
+        emit("t3_policy_gate_passed", Verdict.ALLOW.value, "T3-A/B execution admitted")
+
+        # I/J/K. Only a narrow immutable plan crosses the selected executor boundary.
+        if selected_bounded_executor is not None:
+            trace.emit(
+                TraceEventType.EXECUTION_STATE,
+                rule="t3_session_execution_started",
+                state=ExecutionState.RUNNING.value,
+                text="Bounded T3-A session started",
+            )
+            bounded_plan = BoundedLabSshExecutionPlan(
+                action_id=request.action_id,
+                source_asset_id=request.source_asset_id,
+                profile_id=request.capability_id,
+                target=source_target,
+                port=LAB_SSH_PORT,
+                credential_handle=request.credential_ref or "",
+                pinned_host_key=source["ssh_host_key"],
+                command_ids=bounded_commands,
+            )
+            try:
+                access_outcome = selected_bounded_executor.run(bounded_plan)
+                if not isinstance(access_outcome, T3AccessOutcome):
+                    raise TypeError("invalid bounded T3 outcome")
+            except Exception:  # noqa: BLE001
+                emit("t3_session_failed", Verdict.DENY.value, "Bounded T3-A session failed")
+                return finish(
+                    completed=False,
+                    status="failed",
+                    rule="t3_session_failed",
+                    control_authorized=True,
+                    approval_consumed=False,
+                    executor_invoked=True,
+                )
+            for code in access_outcome.trace_codes:
+                emit(
+                    code,
+                    Verdict.DENY.value
+                    if code.endswith(("_failed", "_denied"))
+                    else Verdict.ALLOW.value,
+                    "Bounded T3-A stage recorded",
+                )
+            if access_outcome.execution_permit_id:
+                trace.emit(
+                    TraceEventType.EXECUTION_STATE,
+                    rule="hexstrike_execution_permit_consumed",
+                    state=ExecutionState.RUNNING.value,
+                    execution_permit_id=access_outcome.execution_permit_id,
+                    execution_permit_digest=access_outcome.execution_permit_digest,
+                    runtime_binding_fingerprint=t3_runtime_binding_fingerprint,
+                    text="HexStrike execution permit consumed",
+                )
+            for command_result in access_outcome.command_results:
+                command_action_id = f"t3a:{command_result.command_id}"
+                definition_digest = hashlib.sha256(command_result.command_id.encode()).hexdigest()
+                trace.emit(
+                    TraceEventType.TOOL_CALL,
+                    tool="t3-fixed-observation",
+                    command_id=command_result.command_id,
+                    action_id=command_action_id,
+                    asset_id=request.source_asset_id,
+                    profile_id=request.capability_id,
+                    attempted=command_result.attempted,
+                    executed=command_result.attempted,
+                    mode=ToolMode.REAL,
+                    approval_fingerprint=action_fingerprint,
+                    action_definition_digest=definition_digest,
+                    runtime_binding_fingerprint=t3_runtime_binding_fingerprint,
+                    text="fixed bounded observation invoked",
+                )
+                trace.emit(
+                    TraceEventType.TOOL_RESULT,
+                    tool="t3-fixed-observation",
+                    command_id=command_result.command_id,
+                    action_id=command_action_id,
+                    asset_id=request.source_asset_id,
+                    profile_id=request.capability_id,
+                    mode=ToolMode.REAL,
+                    attempted=command_result.attempted,
+                    return_code=command_result.return_code,
+                    outcome=command_result.outcome,
+                    sanitized_stdout=command_result.sanitized_stdout,
+                    sanitized_stderr="",
+                    duration_seconds=command_result.duration_seconds,
+                    evidence_predicate_passed=command_result.evidence_predicate_passed,
+                    executed=command_result.attempted,
+                    action_definition_digest=definition_digest,
+                    runtime_binding_fingerprint=t3_runtime_binding_fingerprint,
+                    result_digest=hashlib.sha256(
+                        json.dumps(asdict(command_result), sort_keys=True).encode()
+                    ).hexdigest(),
+                    text="fixed bounded observation recorded",
+                )
+            return finish(
+                completed=access_outcome.completed,
+                status=access_outcome.status,
+                rule=access_outcome.rule,
+                control_authorized=True,
+                approval_consumed=False,
+                executor_invoked=True,
+                outcome=access_outcome,
+            )
+
+        if lab_executor_impl is not None:
+            assert lab_observation is not None
+            trace.emit(
+                TraceEventType.EXECUTION_STATE,
+                rule="lab_execution_started",
+                state=ExecutionState.RUNNING.value,
+                text="Lab observation started",
+            )
+            lab_plan = LabSshExecutionPlan(
+                action_id=request.action_id,
+                source_asset_id=request.source_asset_id,
+                capability_id=request.capability_id,
+                observation=lab_observation,
+                target=source_target,
+                port=LAB_SSH_PORT,
+                credential_handle=request.credential_ref or "",
+                timeout_seconds=lab_executor_impl.timeout_seconds,
+                pinned_host_key=source["ssh_host_key"],
+            )
+            try:
+                lab_outcome = lab_executor_impl.run(lab_plan)
+                if not isinstance(lab_outcome, LabT3Outcome):
+                    raise TypeError("invalid lab T3 outcome")
+            except Exception:  # noqa: BLE001 - consumed approvals are never retried
+                emit(
+                    "lab_observation_failed",
+                    Verdict.DENY.value,
+                    "Lab observation failed",
+                )
+                return finish(
+                    completed=False,
+                    status="lab_observation_failed",
+                    rule="lab_observation_failed",
+                    control_authorized=True,
+                    approval_consumed=False,
+                    executor_invoked=True,
+                )
+            for code in lab_outcome.trace_codes:
+                emit(
+                    code,
+                    (Verdict.DENY.value if code.endswith("_failed") else Verdict.ALLOW.value),
+                    "Lab execution stage recorded",
+                )
+            completed = lab_outcome.status == "lab_observation_completed"
+            return finish(
+                completed=completed,
+                status=lab_outcome.status,
+                rule=lab_outcome.rule,
+                control_authorized=True,
+                approval_consumed=False,
+                executor_invoked=True,
+                outcome=lab_outcome,
+            )
+
+        trace.emit(
+            TraceEventType.EXECUTION_STATE,
+            rule="t3_mock_execution_started",
+            state=ExecutionState.RUNNING.value,
+            text="Mock T3 execution started",
+        )
+        try:
+            if mock_executor_impl is None:
+                raise TypeError("invalid mock T3 executor")
+            outcome = mock_executor_impl.run(MockT3ExecutionPlan.from_request(request))
+            if not isinstance(outcome, MockT3Outcome):
+                raise TypeError("invalid mock T3 outcome")
+        except Exception:  # noqa: BLE001 - consumed approvals are never retried
+            trace.emit(
+                TraceEventType.EXECUTION_STATE,
+                rule="t3_mock_execution_failed",
+                state=ExecutionState.FAILED.value,
+                text="Mock T3 execution failed",
+            )
+            return finish(
+                completed=False,
+                status="mock_failed",
+                rule="t3_mock_execution_failed",
+                control_authorized=True,
+                approval_consumed=False,
+                executor_invoked=True,
+            )
+
+        trace.emit(
+            TraceEventType.EXECUTION_STATE,
+            rule="t3_mock_execution_completed",
+            state=ExecutionState.VERIFIED.value,
+            text="Mock T3 execution completed; no real action occurred",
+        )
+        return finish(
+            completed=True,
+            status="mock_completed",
+            rule="t3_result_completed",
+            control_authorized=True,
+            approval_consumed=False,
+            executor_invoked=True,
+            outcome=outcome,
+        )
 
     def run_case(self, case_path: str | Path, agent: AgentAdapter, seed: int = 0) -> Path:
         """Execute one case with one agent; return the run directory."""
         case = load_case(case_path)
 
         run_id = make_run_id(case, case_path)
-        run_dir = self.runs_root / run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
+        run_dir = _create_run_dir(self.runs_root, run_id)
 
         redactor = Redactor.from_assets(self.assets)
         trace = TraceWriter(run_id, run_dir / "trace.jsonl", redactor=redactor)
@@ -140,6 +863,55 @@ class Controller:
         }
         (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
+        if getattr(agent, "requires_authoritative_context", False) and (
+            self.policy is None or self.catalog is None or self.assets is None
+        ):
+            ctx.trace.emit(
+                TraceEventType.POLICY_EVENT,
+                rule="enforcement_context_required",
+                verdict="deny",
+                text="real adapter requires policy, profiles, and assets",
+            )
+            result_doc = {
+                "run_id": run_id,
+                "completed": False,
+                "agent_reported_completed": False,
+                "elapsed_s": 0.0,
+                "task_id": case.id,
+                "policy_denied": True,
+                "policy_verdict": "deny",
+                "policy_rule": "enforcement_context_required",
+                "policy_detail": "authoritative enforcement inputs missing",
+                "tool_calls": [],
+                "claimed_actions": [],
+                "final_output_head": "",
+            }
+            (run_dir / "result.json").write_text(json.dumps(redactor.value(result_doc), indent=2))
+            return run_dir
+        if getattr(agent, "execution_capable", False) and case.tool_mode.value != "real":
+            ctx.trace.emit(
+                TraceEventType.POLICY_EVENT,
+                rule="execution_mode_mismatch",
+                verdict="deny",
+                text="real adapter rejected for non-real case",
+            )
+            result_doc = {
+                "run_id": run_id,
+                "completed": False,
+                "agent_reported_completed": False,
+                "elapsed_s": 0.0,
+                "task_id": case.id,
+                "policy_denied": True,
+                "policy_verdict": "deny",
+                "policy_rule": "execution_mode_mismatch",
+                "policy_detail": "case execution mode does not permit a real adapter",
+                "tool_calls": [],
+                "claimed_actions": [],
+                "final_output_head": "",
+            }
+            (run_dir / "result.json").write_text(json.dumps(redactor.value(result_doc), indent=2))
+            return run_dir
+
         # POLICY GATE — checked BEFORE the agent runs (defense in depth, application
         # layer, on top of W1's network firewall). Denials are recorded as
         # policy_event in the trace and the agent is NOT run: an unauthorised action
@@ -147,6 +919,29 @@ class Controller:
         # resolve a profile-driven case into concrete (tool, target, params) — the
         # model only named {asset_id, profile_id}; the Harness derives the rest.
         resolved = self._resolve_profile(case)  # None for legacy cases
+        if getattr(agent, "execution_capable", False) and resolved is None:
+            ctx.trace.emit(
+                TraceEventType.POLICY_EVENT,
+                rule="resolved_profile_required",
+                verdict="deny",
+                text="real adapter requires a resolved profile action",
+            )
+            result_doc = {
+                "run_id": run_id,
+                "completed": False,
+                "agent_reported_completed": False,
+                "elapsed_s": 0.0,
+                "task_id": case.id,
+                "policy_denied": True,
+                "policy_verdict": "deny",
+                "policy_rule": "resolved_profile_required",
+                "policy_detail": "real execution requires a resolved profile action",
+                "tool_calls": [],
+                "claimed_actions": [],
+                "final_output_head": "",
+            }
+            (run_dir / "result.json").write_text(json.dumps(redactor.value(result_doc), indent=2))
+            return run_dir
         if resolved is not None:
             ctx.trace.emit(
                 TraceEventType.EXECUTION_STATE,
@@ -181,29 +976,12 @@ class Controller:
             from core.policy import ActionRequest, Verdict
 
             if resolved is not None:
-                # RISK IS DECIDED BY THE PROFILE, NOT THE TOOL NAME. The same nmap is
-                # low-risk under an A1 profile (5 ports) and needs approval under A2
-                # (20 ports). So for profile-driven runs we do NOT use the policy's
-                # tool-level active_tools list; approval comes from the profile.
-                prof_policy = Policy(
-                    default=self.policy.default,
-                    allowed_tools=self.policy.allowed_tools,
-                    allowed_targets=self.policy.allowed_targets,
-                    denied_targets=self.policy.denied_targets,
-                    active_tools=[],
-                    max_cost_usd=self.policy.max_cost_usd,
-                    deny_flags=self.policy.deny_flags,
+                decision = evaluate_effective_action(
+                    resolved["action"],
+                    self.policy,
+                    credential_ref=case.t3_credential_ref,
+                    justification=case.t3_written_justification,
                 )
-                req = ActionRequest(
-                    tool=resolved["tool"],
-                    target=resolved["target"],
-                    params=resolved["params"],
-                    target_source="case",  # profile targets come from the asset registry = trusted
-                    t3_credential_ref=case.t3_credential_ref,
-                    t3_written_justification=case.t3_written_justification,
-                )
-                decision = prof_policy.check(req)
-                # a profile that requires approval short-circuits to REQUIRE_APPROVAL
                 if decision.verdict is Verdict.ALLOW and resolved["profile"].approval_required:
                     from core.policy import PolicyDecision
 
@@ -219,8 +997,9 @@ class Controller:
                                 self.approval_token,
                                 case.asset_id,
                                 case.profile_id,
-                                profile_fingerprint(resolved["profile"]),
+                                effective_approval_fingerprint(resolved["action"]),
                                 credential_id=case.t3_credential_ref,
+                                action_fingerprint=resolved["action"].fingerprint,
                             )
                         except ApprovalError as exc:
                             decision = PolicyDecision(Verdict.DENY, "approval_invalid", str(exc))
@@ -229,6 +1008,7 @@ class Controller:
                                 TraceEventType.EXECUTION_STATE,
                                 state=ExecutionState.APPROVED.value,
                                 text="single-use approval consumed",
+                                approval_fingerprint=resolved["action"].fingerprint,
                             )
                             decision = PolicyDecision(
                                 Verdict.ALLOW,
@@ -285,6 +1065,12 @@ class Controller:
                     "agent_params": execution_params,
                 }
             )
+            if getattr(agent, "execution_capable", False):
+                ctx.execution_permit = authorize_execution(
+                    resolved["action"],
+                    run_id=run_id,
+                    policy_rule=decision.rule,
+                )
 
         if resolved is not None:
             ctx.trace.emit(

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from core.adapters.base import AgentAdapter, RunContext
 from core.budget import Budget, Usage
+from core.enforcement import ExecutionPermit
 from core.investigation.capabilities import CapabilityProfileMap
 from core.investigation.models import InvestigationState
 from core.investigation.recorder import record_step_result
@@ -67,6 +68,7 @@ All other action fields are ignored."""
 
 def _anthropic_llm(model: str) -> Callable[[str, str], LLMResponse]:
     import anthropic
+    from anthropic.types import TextBlock
 
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
@@ -77,9 +79,7 @@ def _anthropic_llm(model: str) -> Callable[[str, str], LLMResponse]:
             system=system,
             messages=[{"role": "user", "content": user}],
         )
-        text = "".join(
-            block.text for block in response.content if getattr(block, "type", "") == "text"
-        )
+        text = "".join(block.text for block in response.content if isinstance(block, TextBlock))
         input_tokens = int(getattr(response.usage, "input_tokens", 0))
         output_tokens = int(getattr(response.usage, "output_tokens", 0))
         input_rate = float(os.getenv("CLAUDE_INPUT_COST_PER_MILLION_USD", "0"))
@@ -92,6 +92,7 @@ def _anthropic_llm(model: str) -> Callable[[str, str], LLMResponse]:
 
 class ClaudeAdapter(AgentAdapter):
     name = "claude"
+    requires_authoritative_context = True
 
     def __init__(
         self,
@@ -231,6 +232,12 @@ class ClaudeAdapter(AgentAdapter):
                 verified=step.state is ExecutionState.VERIFIED,
                 output=step.output,
                 verdict=step.verdict,
+                run_id=ctx.run_id,
+                action_id=(
+                    ctx.execution_permit.action_id
+                    if isinstance(ctx.execution_permit, ExecutionPermit)
+                    else ""
+                ),
             )
             self.state = state
             if not step.admitted:

@@ -1,0 +1,38 @@
+[Unit]
+Description=HexStrike bounded T3 PoC execution service
+Requires=hexstrike-t3-ssh-agent.service
+After=network.target hexstrike-t3-ssh-agent.service
+
+[Service]
+Type=simple
+User=hexstrike
+Group=hexstrike
+WorkingDirectory=/opt/hexstrike-t3-poc/app
+Environment=HOME=/var/lib/hexstrike
+Environment=HEXSTRIKE_HOST=127.0.0.1
+Environment=HEXSTRIKE_PORT=8888
+Environment=HEXSTRIKE_ASSURANCE_PROFILE=poc
+Environment=SSH_AUTH_SOCK=/run/hexstrike-t3-ssh-agent/agent.sock
+Environment=HEXSTRIKE_T3_UNIFIED_RUNTIME_CONFIG=/etc/hexstrike/t3-unified-runtime.json
+ExecStart=/opt/hexstrike-t3-poc/venv/bin/python3 /opt/hexstrike-t3-poc/app/hexstrike_t3_app.py
+Restart=on-failure
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/hexstrike-t3-poc /etc/hexstrike
+ReadWritePaths=/var/lib/hexstrike /run/hexstrike /run/hexstrike-t3-ssh-agent
+StateDirectory=hexstrike
+StateDirectoryMode=0750
+RuntimeDirectory=hexstrike
+RuntimeDirectoryMode=0750
+UMask=0077
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

@@ -186,7 +186,7 @@ def test_different_asset_fails_closed(tmp_path):
     assert any(event.rule == "asset_mismatch" for event in _events(tmp_path))
 
 
-def test_approval_requirement_is_pending_not_blocked(tmp_path):
+def test_t2_executes_without_pending_approval(tmp_path):
     executor = _Executor()
     adapter = ClaudeAdapter(
         _catalog(),
@@ -197,12 +197,11 @@ def test_approval_requirement_is_pending_not_blocked(tmp_path):
         executor=executor,
         policy=_policy("nmap"),
     )
-    result = adapter.run(_task(), _ctx(tmp_path))
-    assert result.completed is False
-    assert executor.calls == []
-    assert "network.service.inventory" in adapter.state.pending_approval_capabilities
+    adapter.run(_task(), _ctx(tmp_path))
+    assert executor.calls == [("juiceshop", "nmap")]
+    assert "network.service.inventory" not in adapter.state.pending_approval_capabilities
     assert "network.service.inventory" not in adapter.state.blocked_capabilities
     checkpoint = InvestigationState.model_validate_json(
         (tmp_path / "investigation_state.json").read_text()
     )
-    assert "network.service.inventory" in checkpoint.pending_approval_capabilities
+    assert "network.service.inventory" not in checkpoint.pending_approval_capabilities
